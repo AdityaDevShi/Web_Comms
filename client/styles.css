@@ -616,6 +616,28 @@ body {
   font-size: 0.95rem;
 }
 
+/* Name input in modal */
+.modal-content .input-field {
+  width: 100%;
+  padding: var(--spacing-md) var(--spacing-lg);
+  margin-bottom: var(--spacing-lg);
+  background: var(--bg-input);
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 1rem;
+  transition: border-color var(--transition-fast);
+}
+
+.modal-content .input-field:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.modal-content .input-field::placeholder {
+  color: var(--text-muted);
+}
+
 /* ========================================
    Responsive
    ======================================== */
