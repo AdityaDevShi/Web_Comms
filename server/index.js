@@ -139,6 +139,13 @@ io.on('connection', (socket) => {
     });
   });
 
+  // Handle renegotiation request
+  socket.on('renegotiate', ({ targetId }) => {
+    socket.to(targetId).emit('renegotiate', {
+      senderId: socket.id
+    });
+  });
+
   // Handle mute status
   socket.on('mute-status', ({ isMuted }) => {
     if (currentRoom) {
