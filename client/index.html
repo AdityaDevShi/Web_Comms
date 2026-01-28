@@ -1,170 +1,174 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Real-time voice and video communication app - Create or join rooms for instant voice calls">
-  <title>Web Comms - Voice & Video Rooms</title>
+  <meta name="description" content="Voice Chat - Real-time voice and video communication">
+  <title>Voice Chat</title>
   <link rel="stylesheet" href="styles.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
+
 <body>
   <div class="app-container">
-    <!-- Animated background -->
-    <div class="bg-gradient"></div>
-    <div class="bg-orb bg-orb-1"></div>
-    <div class="bg-orb bg-orb-2"></div>
-    <div class="bg-orb bg-orb-3"></div>
-    
     <!-- Landing View -->
     <div id="landing-view" class="view active">
-      <div class="glass-card main-card">
-        <div class="logo-section">
-          <div class="logo">
-            <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="24" cy="24" r="20" stroke="url(#logo-gradient)" stroke-width="3"/>
-              <path d="M18 20C18 17.7909 19.7909 16 22 16H26C28.2091 16 30 17.7909 30 20V24C30 26.2091 28.2091 28 26 28H22C19.7909 28 18 26.2091 18 24V20Z" fill="url(#logo-gradient)"/>
-              <circle cx="24" cy="34" r="3" fill="url(#logo-gradient)"/>
-              <defs>
-                <linearGradient id="logo-gradient" x1="4" y1="4" x2="44" y2="44">
-                  <stop stop-color="#6366f1"/>
-                  <stop offset="1" stop-color="#06b6d4"/>
-                </linearGradient>
-              </defs>
-            </svg>
-          </div>
-          <h1>Web Comms</h1>
-          <p class="tagline">Crystal-clear voice rooms, instantly</p>
+      <header class="app-header">
+        <button class="header-btn" title="Profile">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10" />
+            <circle cx="12" cy="10" r="3" />
+            <path d="M7 20.662V19a2 2 0 012-2h6a2 2 0 012 2v1.662" />
+          </svg>
+        </button>
+        <h1>Voice Chat</h1>
+        <button class="header-btn" title="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3" />
+            <path
+              d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z" />
+          </svg>
+        </button>
+      </header>
+
+      <div class="main-card">
+        <div class="mic-icon-wrapper">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
+            <path d="M19 10v2a7 7 0 01-14 0v-2" />
+            <line x1="12" y1="19" x2="12" y2="23" />
+            <line x1="8" y1="23" x2="16" y2="23" />
+          </svg>
         </div>
-        
-        <div class="action-section">
-          <button id="create-room-btn" class="btn btn-primary">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 5v14M5 12h14"/>
-            </svg>
-            Create Room
-          </button>
-          
-          <div class="divider">
-            <span>or join existing</span>
-          </div>
-          
-          <div class="join-section">
-            <input 
-              type="text" 
-              id="room-code-input" 
-              class="input-field" 
-              placeholder="Enter room code"
-              maxlength="6"
-              autocomplete="off"
-            >
-            <button id="join-room-btn" class="btn btn-secondary">
+
+        <h2>Ready to talk?</h2>
+        <p class="subtitle">Start a new room or join your team's conversation.</p>
+
+        <button id="create-room-btn" class="btn btn-primary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 8v8M8 12h8" />
+          </svg>
+          Create New Room
+        </button>
+
+        <div class="divider">
+          <span>OR</span>
+        </div>
+
+        <div class="join-section">
+          <label class="join-label">Join with Code</label>
+          <div class="input-group">
+            <input type="text" id="room-code-input" class="input-field" placeholder="Ex: 123-456" maxlength="6"
+              autocomplete="off">
+            <button id="join-room-btn" class="input-submit-btn" title="Join Room">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4M10 17l5-5-5-5M15 12H3"/>
+                <path d="M5 12h14M12 5l7 7-7 7" />
               </svg>
-              Join
             </button>
           </div>
         </div>
-        
+
         <div id="error-message" class="error-message hidden"></div>
       </div>
+
+      <div class="info-banner">
+        <div class="info-banner-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 16v-4M12 8h.01" />
+          </svg>
+        </div>
+        <p>Share your room code with friends to start a voice chat instantly.</p>
+      </div>
     </div>
-    
+
     <!-- Room View -->
     <div id="room-view" class="view">
       <header class="room-header">
         <div class="room-info">
           <div class="room-code-display">
-            <span class="label">Room Code</span>
             <span id="current-room-code" class="code">------</span>
-            <button id="copy-code-btn" class="icon-btn" title="Copy code">
+            <button id="copy-code-btn" class="copy-btn" title="Copy code">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="9" y="9" width="13" height="13" rx="2"/>
-                <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                <rect x="9" y="9" width="13" height="13" rx="2" />
+                <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
               </svg>
             </button>
           </div>
           <div class="participant-count">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
-              <circle cx="9" cy="7" r="4"/>
-              <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+              <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" />
             </svg>
             <span id="participant-count-text">1 participant</span>
           </div>
         </div>
       </header>
-      
+
       <main class="room-main">
         <div id="participants-grid" class="participants-grid">
           <!-- Participant cards will be added dynamically -->
         </div>
-        
-        <div class="audio-visualizer">
-          <div class="wave-container">
-            <div class="wave"></div>
-            <div class="wave"></div>
-            <div class="wave"></div>
-            <div class="wave"></div>
-            <div class="wave"></div>
-          </div>
-          <p id="connection-status" class="status-text">Connecting...</p>
-        </div>
       </main>
-      
+
       <footer class="room-controls">
         <button id="mute-btn" class="control-btn" title="Toggle Microphone">
           <svg id="mic-on-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>
-            <path d="M19 10v2a7 7 0 01-14 0v-2"/>
-            <line x1="12" y1="19" x2="12" y2="23"/>
-            <line x1="8" y1="23" x2="16" y2="23"/>
+            <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
+            <path d="M19 10v2a7 7 0 01-14 0v-2" />
+            <line x1="12" y1="19" x2="12" y2="23" />
+            <line x1="8" y1="23" x2="16" y2="23" />
           </svg>
           <svg id="mic-off-icon" class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="1" y1="1" x2="23" y2="23"/>
-            <path d="M9 9v3a3 3 0 005.12 2.12M15 9.34V4a3 3 0 00-5.94-.6"/>
-            <path d="M17 16.95A7 7 0 015 12v-2m14 0v2c0 .83-.14 1.63-.42 2.37"/>
-            <line x1="12" y1="19" x2="12" y2="23"/>
-            <line x1="8" y1="23" x2="16" y2="23"/>
+            <line x1="1" y1="1" x2="23" y2="23" />
+            <path d="M9 9v3a3 3 0 005.12 2.12M15 9.34V4a3 3 0 00-5.94-.6" />
+            <path d="M17 16.95A7 7 0 015 12v-2m14 0v2c0 .83-.14 1.63-.42 2.37" />
+            <line x1="12" y1="19" x2="12" y2="23" />
+            <line x1="8" y1="23" x2="16" y2="23" />
           </svg>
-          <span>Mute</span>
         </button>
-        
-        <button id="video-btn" class="control-btn" title="Toggle Video (Optional)">
+
+        <button id="video-btn" class="control-btn" title="Toggle Camera">
           <svg id="video-on-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polygon points="23 7 16 12 23 17 23 7"/>
-            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+            <polygon points="23 7 16 12 23 17 23 7" />
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
           </svg>
-          <svg id="video-off-icon" class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M16 16v1a2 2 0 01-2 2H3a2 2 0 01-2-2V7a2 2 0 012-2h2m5.66 0H14a2 2 0 012 2v3.34l1 1L23 7v10"/>
-            <line x1="1" y1="1" x2="23" y2="23"/>
+          <svg id="video-off-icon" class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2">
+            <path d="M16 16v1a2 2 0 01-2 2H3a2 2 0 01-2-2V7a2 2 0 012-2h2m5.66 0H14a2 2 0 012 2v3.34l1 1L23 7v10" />
+            <line x1="1" y1="1" x2="23" y2="23" />
           </svg>
-          <span>Video</span>
         </button>
-        
-        <button id="leave-btn" class="control-btn control-btn-danger" title="Leave Room">
+
+        <button id="screen-btn" class="control-btn" title="Share Screen">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/>
-            <polyline points="16 17 21 12 16 7"/>
-            <line x1="21" y1="12" x2="9" y2="12"/>
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+            <line x1="8" y1="21" x2="16" y2="21" />
+            <line x1="12" y1="17" x2="12" y2="21" />
           </svg>
-          <span>Leave</span>
+        </button>
+
+        <button id="leave-btn" class="control-btn control-btn-leave" title="Leave Room">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" />
+            <polyline points="16 17 21 12 16 7" />
+            <line x1="21" y1="12" x2="9" y2="12" />
+          </svg>
         </button>
       </footer>
     </div>
-    
+
     <!-- Permission Modal -->
     <div id="permission-modal" class="modal hidden">
-      <div class="modal-content glass-card">
+      <div class="modal-content">
         <div class="modal-icon">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>
-            <path d="M19 10v2a7 7 0 01-14 0v-2"/>
-            <line x1="12" y1="19" x2="12" y2="23"/>
-            <line x1="8" y1="23" x2="16" y2="23"/>
+            <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
+            <path d="M19 10v2a7 7 0 01-14 0v-2" />
+            <line x1="12" y1="19" x2="12" y2="23" />
+            <line x1="8" y1="23" x2="16" y2="23" />
           </svg>
         </div>
         <h2>Microphone Access Required</h2>
@@ -173,11 +177,12 @@
       </div>
     </div>
   </div>
-  
-  <!-- Audio elements container -->
+
+  <!-- Audio/Video elements container -->
   <div id="remote-audio-container" style="display: none;"></div>
-  
+
   <script src="/socket.io/socket.io.js"></script>
   <script src="app.js"></script>
 </body>
+
 </html>

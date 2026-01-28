@@ -42,23 +42,23 @@ function broadcastParticipantCount(roomCode) {
 
 io.on('connection', (socket) => {
   console.log(`User connected: ${socket.id}`);
-  
+
   let currentRoom = null;
 
   // Create a new room
   socket.on('create-room', (callback) => {
     let roomCode = generateRoomCode();
-    
+
     // Ensure unique code
     while (rooms.has(roomCode)) {
       roomCode = generateRoomCode();
     }
-    
+
     rooms.set(roomCode, {
       participants: new Map(),
       createdAt: Date.now()
     });
-    
+
     console.log(`Room created: ${roomCode}`);
     callback({ success: true, roomCode });
   });
@@ -66,14 +66,14 @@ io.on('connection', (socket) => {
   // Join an existing room
   socket.on('join-room', ({ roomCode, userName }, callback) => {
     roomCode = roomCode.toUpperCase();
-    
+
     if (!rooms.has(roomCode)) {
       callback({ success: false, error: 'Room not found' });
       return;
     }
-    
+
     const room = rooms.get(roomCode);
-    
+
     // Leave previous room if any
     if (currentRoom) {
       socket.leave(currentRoom);
@@ -84,12 +84,12 @@ io.on('connection', (socket) => {
         socket.to(currentRoom).emit('user-left', { odliterId: socket.id });
       }
     }
-    
+
     // Join new room
     socket.join(roomCode);
     currentRoom = roomCode;
     room.participants.set(socket.id, { userName: userName || 'Anonymous', joinedAt: Date.now() });
-    
+
     // Get existing participants
     const existingParticipants = [];
     room.participants.forEach((data, odliterId) => {
@@ -97,19 +97,19 @@ io.on('connection', (socket) => {
         existingParticipants.push({ odliterId, userName: data.userName });
       }
     });
-    
+
     console.log(`User ${socket.id} joined room ${roomCode}`);
-    
+
     // Notify others in room
     socket.to(roomCode).emit('user-joined', {
       odliterId: socket.id,
       userName: userName || 'Anonymous'
     });
-    
+
     broadcastParticipantCount(roomCode);
-    
-    callback({ 
-      success: true, 
+
+    callback({
+      success: true,
       participants: existingParticipants,
       participantCount: room.participants.size
     });
@@ -149,6 +149,16 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Handle video status
+  socket.on('video-status', ({ isVideoEnabled }) => {
+    if (currentRoom) {
+      socket.to(currentRoom).emit('user-video-status', {
+        odliterId: socket.id,
+        isVideoEnabled
+      });
+    }
+  });
+
   // Handle leave room
   socket.on('leave-room', () => {
     if (currentRoom) {
@@ -157,7 +167,7 @@ io.on('connection', (socket) => {
         room.participants.delete(socket.id);
         socket.to(currentRoom).emit('user-left', { odliterId: socket.id });
         broadcastParticipantCount(currentRoom);
-        
+
         // Clean up empty rooms
         if (room.participants.size === 0) {
           rooms.delete(currentRoom);
@@ -172,14 +182,14 @@ io.on('connection', (socket) => {
   // Handle disconnect
   socket.on('disconnect', () => {
     console.log(`User disconnected: ${socket.id}`);
-    
+
     if (currentRoom) {
       const room = rooms.get(currentRoom);
       if (room) {
         room.participants.delete(socket.id);
         socket.to(currentRoom).emit('user-left', { odliterId: socket.id });
         broadcastParticipantCount(currentRoom);
-        
+
         // Clean up empty rooms
         if (room.participants.size === 0) {
           rooms.delete(currentRoom);

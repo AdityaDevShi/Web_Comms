@@ -1,5 +1,5 @@
 // ========================================
-// WebRTC Voice Communication App
+// WebRTC Voice & Video Communication App
 // ========================================
 
 // Configuration
@@ -14,47 +14,37 @@ const ICE_SERVERS = {
 // State
 let socket = null;
 let localStream = null;
+let localVideoStream = null;
 let currentRoomCode = null;
 let isMuted = false;
 let isVideoEnabled = false;
 let userName = 'You';
 
-// Peer connections map: odliterId -> { pc: RTCPeerConnection, stream: MediaStream }
+// Peer connections map
 const peers = new Map();
 
 // DOM Elements
 const elements = {
-    // Views
     landingView: document.getElementById('landing-view'),
     roomView: document.getElementById('room-view'),
-
-    // Landing
     createRoomBtn: document.getElementById('create-room-btn'),
     joinRoomBtn: document.getElementById('join-room-btn'),
     roomCodeInput: document.getElementById('room-code-input'),
     errorMessage: document.getElementById('error-message'),
-
-    // Room
     currentRoomCode: document.getElementById('current-room-code'),
     copyCodeBtn: document.getElementById('copy-code-btn'),
     participantCountText: document.getElementById('participant-count-text'),
     participantsGrid: document.getElementById('participants-grid'),
-    connectionStatus: document.getElementById('connection-status'),
-
-    // Controls
     muteBtn: document.getElementById('mute-btn'),
     videoBtn: document.getElementById('video-btn'),
+    screenBtn: document.getElementById('screen-btn'),
     leaveBtn: document.getElementById('leave-btn'),
     micOnIcon: document.getElementById('mic-on-icon'),
     micOffIcon: document.getElementById('mic-off-icon'),
     videoOnIcon: document.getElementById('video-on-icon'),
     videoOffIcon: document.getElementById('video-off-icon'),
-
-    // Modal
     permissionModal: document.getElementById('permission-modal'),
     grantPermissionBtn: document.getElementById('grant-permission-btn'),
-
-    // Audio
     remoteAudioContainer: document.getElementById('remote-audio-container')
 };
 
@@ -73,36 +63,29 @@ function initSocket() {
         showError('Connection lost. Please refresh the page.');
     });
 
-    // New user joined the room
     socket.on('user-joined', async ({ odliterId, userName }) => {
         console.log(`User joined: ${odliterId}`);
         await createPeerConnection(odliterId, userName, true);
     });
 
-    // User left the room
     socket.on('user-left', ({ odliterId }) => {
         console.log(`User left: ${odliterId}`);
         removePeer(odliterId);
     });
 
-    // Receive offer from remote peer
     socket.on('offer', async ({ senderId, offer }) => {
         console.log(`Received offer from: ${senderId}`);
-
         let peer = peers.get(senderId);
         if (!peer) {
             await createPeerConnection(senderId, 'Participant', false);
             peer = peers.get(senderId);
         }
-
         await peer.pc.setRemoteDescription(new RTCSessionDescription(offer));
         const answer = await peer.pc.createAnswer();
         await peer.pc.setLocalDescription(answer);
-
         socket.emit('answer', { targetId: senderId, answer });
     });
 
-    // Receive answer from remote peer
     socket.on('answer', async ({ senderId, answer }) => {
         console.log(`Received answer from: ${senderId}`);
         const peer = peers.get(senderId);
@@ -111,7 +94,6 @@ function initSocket() {
         }
     });
 
-    // Receive ICE candidate
     socket.on('ice-candidate', async ({ senderId, candidate }) => {
         const peer = peers.get(senderId);
         if (peer && candidate) {
@@ -123,14 +105,16 @@ function initSocket() {
         }
     });
 
-    // Participant count update
     socket.on('participant-count', ({ count }) => {
         updateParticipantCount(count);
     });
 
-    // User mute status change
     socket.on('user-mute-status', ({ odliterId, isMuted }) => {
         updatePeerMuteStatus(odliterId, isMuted);
+    });
+
+    socket.on('user-video-status', ({ odliterId, isVideoEnabled }) => {
+        updatePeerVideoStatus(odliterId, isVideoEnabled);
     });
 }
 
@@ -140,14 +124,20 @@ function initSocket() {
 async function createPeerConnection(odliterId, peerName, isInitiator) {
     const pc = new RTCPeerConnection(ICE_SERVERS);
 
-    // Add local tracks
+    // Add local audio track
     if (localStream) {
         localStream.getTracks().forEach(track => {
             pc.addTrack(track, localStream);
         });
     }
 
-    // Handle ICE candidates
+    // Add local video track if enabled
+    if (localVideoStream) {
+        localVideoStream.getTracks().forEach(track => {
+            pc.addTrack(track, localVideoStream);
+        });
+    }
+
     pc.onicecandidate = (event) => {
         if (event.candidate) {
             socket.emit('ice-candidate', {
@@ -157,46 +147,53 @@ async function createPeerConnection(odliterId, peerName, isInitiator) {
         }
     };
 
-    // Handle connection state change
     pc.onconnectionstatechange = () => {
         console.log(`Connection state with ${odliterId}: ${pc.connectionState}`);
-        if (pc.connectionState === 'connected') {
-            updateConnectionStatus('Connected', true);
-        } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
             removePeer(odliterId);
         }
     };
 
-    // Handle remote stream
     pc.ontrack = (event) => {
-        console.log(`Received track from: ${odliterId}`);
+        console.log(`Received track from: ${odliterId}`, event.track.kind);
         const [remoteStream] = event.streams;
-
-        // Update peer data
         const peer = peers.get(odliterId);
         if (peer) {
             peer.stream = remoteStream;
         }
 
-        // Create or update audio element
-        let audio = document.getElementById(`audio-${odliterId}`);
-        if (!audio) {
-            audio = document.createElement('audio');
-            audio.id = `audio-${odliterId}`;
-            audio.autoplay = true;
-            audio.playsInline = true;
-            elements.remoteAudioContainer.appendChild(audio);
+        if (event.track.kind === 'audio') {
+            let audio = document.getElementById(`audio-${odliterId}`);
+            if (!audio) {
+                audio = document.createElement('audio');
+                audio.id = `audio-${odliterId}`;
+                audio.autoplay = true;
+                audio.playsInline = true;
+                elements.remoteAudioContainer.appendChild(audio);
+            }
+            audio.srcObject = remoteStream;
         }
-        audio.srcObject = remoteStream;
 
-        // Add participant card
+        if (event.track.kind === 'video') {
+            const card = document.getElementById(`participant-${odliterId}`);
+            if (card) {
+                let video = card.querySelector('video');
+                if (!video) {
+                    video = document.createElement('video');
+                    video.autoplay = true;
+                    video.playsInline = true;
+                    video.muted = true;
+                    card.insertBefore(video, card.firstChild);
+                }
+                video.srcObject = remoteStream;
+            }
+        }
+
         addParticipantCard(odliterId, peerName);
     };
 
-    // Store peer connection
     peers.set(odliterId, { pc, userName: peerName, stream: null, isMuted: false });
 
-    // Create offer if initiator
     if (isInitiator) {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
@@ -212,17 +209,11 @@ function removePeer(odliterId) {
         peer.pc.close();
         peers.delete(odliterId);
 
-        // Remove audio element
         const audio = document.getElementById(`audio-${odliterId}`);
-        if (audio) {
-            audio.remove();
-        }
+        if (audio) audio.remove();
 
-        // Remove participant card
         const card = document.getElementById(`participant-${odliterId}`);
-        if (card) {
-            card.remove();
-        }
+        if (card) card.remove();
     }
 }
 
@@ -233,17 +224,17 @@ async function getLocalStream() {
     try {
         localStream = await navigator.mediaDevices.getUserMedia({
             audio: true,
-            video: false // Video disabled by default
+            video: false
         });
         return true;
     } catch (err) {
         console.error('Error accessing microphone:', err);
         if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-            showError('Microphone access denied. Please allow microphone access to join voice rooms.');
+            showError('Microphone access denied. Please allow microphone access.');
         } else if (err.name === 'NotFoundError') {
-            showError('No microphone found. Please connect a microphone and try again.');
+            showError('No microphone found. Please connect a microphone.');
         } else {
-            showError('Could not access microphone. Please check your device settings.');
+            showError('Could not access microphone.');
         }
         return false;
     }
@@ -257,59 +248,109 @@ function toggleMute() {
         track.enabled = !isMuted;
     });
 
-    // Update UI
     elements.muteBtn.classList.toggle('muted', isMuted);
     elements.micOnIcon.classList.toggle('hidden', isMuted);
     elements.micOffIcon.classList.toggle('hidden', !isMuted);
-    elements.muteBtn.querySelector('span').textContent = isMuted ? 'Unmute' : 'Mute';
 
-    // Notify other participants
     socket.emit('mute-status', { isMuted });
+
+    // Update self participant card
+    const selfStatus = document.getElementById('status-self');
+    if (selfStatus) {
+        selfStatus.classList.toggle('muted', isMuted);
+        selfStatus.querySelector('span').textContent = isMuted ? 'Muted' : 'Active';
+    }
 }
 
 async function toggleVideo() {
-    if (!localStream) return;
-
-    const videoTracks = localStream.getVideoTracks();
-
-    if (videoTracks.length === 0 && !isVideoEnabled) {
-        // Request video
-        try {
-            const videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
-            const videoTrack = videoStream.getVideoTracks()[0];
-            localStream.addTrack(videoTrack);
-
-            // Add track to all peer connections
-            peers.forEach(peer => {
-                peer.pc.addTrack(videoTrack, localStream);
+    try {
+        if (!isVideoEnabled) {
+            // Request video stream
+            localVideoStream = await navigator.mediaDevices.getUserMedia({
+                video: { width: 1280, height: 720 }
             });
 
-            isVideoEnabled = true;
-        } catch (err) {
-            console.error('Error accessing camera:', err);
-            showError('Could not access camera.');
-            return;
-        }
-    } else {
-        // Toggle existing video tracks
-        isVideoEnabled = !isVideoEnabled;
-        videoTracks.forEach(track => {
-            track.enabled = isVideoEnabled;
-        });
-    }
+            const videoTrack = localVideoStream.getVideoTracks()[0];
 
-    // Update UI
-    elements.videoBtn.classList.toggle('active', isVideoEnabled);
-    elements.videoOnIcon.classList.toggle('hidden', !isVideoEnabled);
-    elements.videoOffIcon.classList.toggle('hidden', isVideoEnabled);
-    elements.videoBtn.querySelector('span').textContent = isVideoEnabled ? 'Stop' : 'Video';
+            // Add video track to all peer connections
+            peers.forEach(peer => {
+                const sender = peer.pc.getSenders().find(s => s.track?.kind === 'video');
+                if (sender) {
+                    sender.replaceTrack(videoTrack);
+                } else {
+                    peer.pc.addTrack(videoTrack, localVideoStream);
+                }
+            });
+
+            // Show local video preview
+            const selfCard = document.getElementById('participant-self');
+            if (selfCard) {
+                let video = selfCard.querySelector('video');
+                if (!video) {
+                    video = document.createElement('video');
+                    video.autoplay = true;
+                    video.playsInline = true;
+                    video.muted = true;
+                    video.style.transform = 'scaleX(-1)';
+                    selfCard.insertBefore(video, selfCard.firstChild);
+                }
+                video.srcObject = localVideoStream;
+
+                // Hide avatar when video is on
+                const avatar = selfCard.querySelector('.participant-avatar');
+                if (avatar) avatar.style.display = 'none';
+            }
+
+            isVideoEnabled = true;
+            console.log('Video enabled');
+        } else {
+            // Stop video stream
+            if (localVideoStream) {
+                localVideoStream.getTracks().forEach(track => track.stop());
+                localVideoStream = null;
+            }
+
+            // Remove video tracks from peer connections
+            peers.forEach(peer => {
+                const sender = peer.pc.getSenders().find(s => s.track?.kind === 'video');
+                if (sender) {
+                    peer.pc.removeTrack(sender);
+                }
+            });
+
+            // Remove local video preview
+            const selfCard = document.getElementById('participant-self');
+            if (selfCard) {
+                const video = selfCard.querySelector('video');
+                if (video) video.remove();
+
+                // Show avatar again
+                const avatar = selfCard.querySelector('.participant-avatar');
+                if (avatar) avatar.style.display = 'flex';
+            }
+
+            isVideoEnabled = false;
+            console.log('Video disabled');
+        }
+
+        // Update button state
+        elements.videoBtn.classList.toggle('active', isVideoEnabled);
+        elements.videoOnIcon.classList.toggle('hidden', !isVideoEnabled);
+        elements.videoOffIcon.classList.toggle('hidden', isVideoEnabled);
+
+        // Notify others
+        socket.emit('video-status', { isVideoEnabled });
+
+    } catch (err) {
+        console.error('Error toggling video:', err);
+        showError('Could not access camera. Please check permissions.');
+    }
 }
 
 // ========================================
 // Room Management
 // ========================================
 async function createRoom() {
-    // Get microphone permission first
     const hasPermission = await getLocalStream();
     if (!hasPermission) return;
 
@@ -323,14 +364,13 @@ async function createRoom() {
 }
 
 async function joinRoom() {
-    const roomCode = elements.roomCodeInput.value.trim().toUpperCase();
+    const roomCode = elements.roomCodeInput.value.trim().toUpperCase().replace(/-/g, '');
 
     if (!roomCode || roomCode.length < 4) {
         showError('Please enter a valid room code.');
         return;
     }
 
-    // Get microphone permission first
     const hasPermission = await getLocalStream();
     if (!hasPermission) return;
 
@@ -343,15 +383,11 @@ function joinRoomInternal(roomCode) {
             currentRoomCode = roomCode;
             showRoomView();
 
-            // Connect to existing participants
             response.participants.forEach(async (participant) => {
                 await createPeerConnection(participant.odliterId, participant.userName, true);
             });
 
             updateParticipantCount(response.participantCount);
-            updateConnectionStatus('Connected', true);
-
-            // Add self to participants
             addParticipantCard('self', userName, true);
         } else {
             showError(response.error || 'Failed to join room.');
@@ -362,39 +398,35 @@ function joinRoomInternal(roomCode) {
 function leaveRoom() {
     socket.emit('leave-room');
 
-    // Close all peer connections
-    peers.forEach((peer, odliterId) => {
+    peers.forEach((peer) => {
         peer.pc.close();
     });
     peers.clear();
 
-    // Stop local stream
     if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
         localStream = null;
     }
 
-    // Clear audio elements
-    elements.remoteAudioContainer.innerHTML = '';
+    if (localVideoStream) {
+        localVideoStream.getTracks().forEach(track => track.stop());
+        localVideoStream = null;
+    }
 
-    // Clear participant cards
+    elements.remoteAudioContainer.innerHTML = '';
     elements.participantsGrid.innerHTML = '';
 
-    // Reset state
     currentRoomCode = null;
     isMuted = false;
     isVideoEnabled = false;
 
-    // Update UI
     elements.muteBtn.classList.remove('muted');
     elements.micOnIcon.classList.remove('hidden');
     elements.micOffIcon.classList.add('hidden');
-    elements.muteBtn.querySelector('span').textContent = 'Mute';
 
     elements.videoBtn.classList.remove('active');
     elements.videoOnIcon.classList.remove('hidden');
     elements.videoOffIcon.classList.add('hidden');
-    elements.videoBtn.querySelector('span').textContent = 'Video';
 
     showLandingView();
 }
@@ -412,7 +444,14 @@ function showLandingView() {
 function showRoomView() {
     elements.landingView.classList.remove('active');
     elements.roomView.classList.add('active');
-    elements.currentRoomCode.textContent = currentRoomCode;
+    elements.currentRoomCode.textContent = formatRoomCode(currentRoomCode);
+}
+
+function formatRoomCode(code) {
+    if (code.length === 6) {
+        return code.slice(0, 3) + '-' + code.slice(3);
+    }
+    return code;
 }
 
 function showError(message) {
@@ -428,33 +467,26 @@ function updateParticipantCount(count) {
     elements.participantCountText.textContent = `${count} participant${count !== 1 ? 's' : ''}`;
 }
 
-function updateConnectionStatus(text, connected) {
-    elements.connectionStatus.textContent = text;
-    elements.connectionStatus.classList.toggle('connected', connected);
-}
-
 function addParticipantCard(id, name, isSelf = false) {
-    // Check if card already exists
     if (document.getElementById(`participant-${id}`)) return;
 
     const card = document.createElement('div');
     card.id = `participant-${id}`;
-    card.className = 'participant-card';
-    if (isSelf) card.classList.add('self');
+    card.className = 'participant-card' + (isSelf ? ' local-video-container' : '');
 
     const initial = name.charAt(0).toUpperCase();
 
     card.innerHTML = `
-    <div class="participant-avatar">${initial}</div>
-    <span class="participant-name">${isSelf ? 'You' : name}</span>
-    <div class="participant-status" id="status-${id}">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>
-        <path d="M19 10v2a7 7 0 01-14 0v-2"/>
-      </svg>
-      <span>Active</span>
-    </div>
-  `;
+        <div class="participant-avatar">${initial}</div>
+        <span class="participant-name">${isSelf ? 'You' : name}</span>
+        <div class="participant-status" id="status-${id}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>
+                <path d="M19 10v2a7 7 0 01-14 0v-2"/>
+            </svg>
+            <span>Active</span>
+        </div>
+    `;
 
     elements.participantsGrid.appendChild(card);
 }
@@ -467,10 +499,19 @@ function updatePeerMuteStatus(odliterId, isMuted) {
     }
 }
 
+function updatePeerVideoStatus(odliterId, isVideoEnabled) {
+    const card = document.getElementById(`participant-${odliterId}`);
+    if (card) {
+        const avatar = card.querySelector('.participant-avatar');
+        if (avatar) {
+            avatar.style.display = isVideoEnabled ? 'none' : 'flex';
+        }
+    }
+}
+
 async function copyRoomCode() {
     try {
         await navigator.clipboard.writeText(currentRoomCode);
-        // Show brief feedback
         const originalText = elements.currentRoomCode.textContent;
         elements.currentRoomCode.textContent = 'Copied!';
         setTimeout(() => {
@@ -496,6 +537,13 @@ function initEventListeners() {
     elements.leaveBtn.addEventListener('click', leaveRoom);
     elements.copyCodeBtn.addEventListener('click', copyRoomCode);
 
+    if (elements.screenBtn) {
+        elements.screenBtn.addEventListener('click', () => {
+            showError('Screen sharing coming soon!');
+            setTimeout(hideError, 2000);
+        });
+    }
+
     elements.grantPermissionBtn.addEventListener('click', async () => {
         const hasPermission = await getLocalStream();
         if (hasPermission) {
@@ -503,9 +551,8 @@ function initEventListeners() {
         }
     });
 
-    // Auto-uppercase room code input
     elements.roomCodeInput.addEventListener('input', (e) => {
-        e.target.value = e.target.value.toUpperCase();
+        e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
         hideError();
     });
 }
@@ -516,8 +563,7 @@ function initEventListeners() {
 function init() {
     initSocket();
     initEventListeners();
-    console.log('Web Comms initialized');
+    console.log('Voice Chat initialized');
 }
 
-// Start the app
 init();
