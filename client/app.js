@@ -2,48 +2,32 @@
 // WebRTC Voice & Video Communication App
 // ========================================
 
-// Multiple ICE server options for maximum connectivity
-// TURN servers are essential for ~30% of connections that can't use STUN
-const ICE_SERVERS = {
+// ICE Servers - fetched from server or fallback
+let iceConfig = null;
+
+// Fallback ICE servers
+const FALLBACK_ICE_SERVERS = {
     iceServers: [
-        // Google STUN servers (always work)
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
-
-        // Free TURN servers from different providers
-        // Option 1: Metered.ca free relay
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
+        // Free TURN servers from gist
         {
-            urls: 'turn:standard.relay.metered.ca:80',
-            username: 'e8dd65b92c62d5e89cb5e78f',
-            credential: 'uWdWNmkhvyqTlSlg'
+            urls: 'turn:numb.viagenie.ca',
+            username: 'webrtc@live.com',
+            credential: 'muazkh'
         },
         {
-            urls: 'turn:standard.relay.metered.ca:443',
-            username: 'e8dd65b92c62d5e89cb5e78f',
-            credential: 'uWdWNmkhvyqTlSlg'
+            urls: 'turn:turn.bistri.com:80',
+            username: 'homeo',
+            credential: 'homeo'
         },
         {
-            urls: 'turns:standard.relay.metered.ca:443',
-            username: 'e8dd65b92c62d5e89cb5e78f',
-            credential: 'uWdWNmkhvyqTlSlg'
-        },
-
-        // Option 2: OpenRelay (public testing servers)
-        {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-        },
-        {
-            urls: 'turn:openrelay.metered.ca:443',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-        },
-        {
-            urls: 'turns:openrelay.metered.ca:443',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
+            urls: 'turn:turn.anyfirewall.com:443?transport=tcp',
+            username: 'webrtc',
+            credential: 'webrtc'
         }
     ],
     iceCandidatePoolSize: 10
@@ -97,6 +81,21 @@ const elements = {
 function log(emoji, msg, ...args) {
     const time = new Date().toLocaleTimeString();
     console.log(`${emoji} [${time}] ${msg}`, ...args);
+}
+
+// ========================================
+// Fetch ICE Servers
+// ========================================
+async function fetchIceServers() {
+    try {
+        const res = await fetch('/api/ice-servers');
+        const data = await res.json();
+        iceConfig = { iceServers: data.iceServers, iceCandidatePoolSize: 10 };
+        log('📡', `Got ${data.iceServers.length} ICE servers from API`);
+    } catch (e) {
+        log('⚠️', 'Using fallback ICE servers');
+        iceConfig = FALLBACK_ICE_SERVERS;
+    }
 }
 
 // ========================================
@@ -225,13 +224,13 @@ async function createConnection(odliterId, peerName, initiator) {
 
     log('🔗', `Creating connection to ${odliterId}, initiator: ${initiator}`);
 
-    const pc = new RTCPeerConnection(ICE_SERVERS);
+    const pc = new RTCPeerConnection(iceConfig || FALLBACK_ICE_SERVERS);
 
     // Store peer data
     peers.set(odliterId, {
         pc,
         userName: peerName,
-        polite: !initiator, // Polite = responder (joined later gets offers)
+        polite: !initiator,
         iceBuffer: []
     });
 
@@ -247,7 +246,7 @@ async function createConnection(odliterId, peerName, initiator) {
     // ICE candidate
     pc.onicecandidate = ({ candidate }) => {
         if (candidate) {
-            log('🧊', `Sending ICE to ${odliterId}: ${candidate.candidate.substring(0, 50)}...`);
+            log('🧊', `Sending ICE to ${odliterId}`);
             sendSignal(odliterId, candidate);
         }
     };
@@ -257,7 +256,7 @@ async function createConnection(odliterId, peerName, initiator) {
         log('🧊', `ICE gathering [${odliterId}]: ${pc.iceGatheringState}`);
     };
 
-    // ICE connection state - CRITICAL for debugging
+    // ICE connection state
     pc.oniceconnectionstatechange = () => {
         const state = pc.iceConnectionState;
         log('🧊', `ICE connection [${odliterId}]: ${state}`);
@@ -270,9 +269,6 @@ async function createConnection(odliterId, peerName, initiator) {
         } else if (state === 'failed') {
             log('❌', `ICE FAILED with ${odliterId}`);
             updateStatus(odliterId, 'failed');
-
-            // Try to restart ICE
-            log('🔄', 'Attempting ICE restart...');
             pc.restartIce();
         } else if (state === 'disconnected') {
             updateStatus(odliterId, 'disconnected');
@@ -284,7 +280,7 @@ async function createConnection(odliterId, peerName, initiator) {
         log('🔌', `Connection [${odliterId}]: ${pc.connectionState}`);
     };
 
-    // Incoming tracks - CRITICAL
+    // Incoming tracks
     pc.ontrack = (event) => {
         log('🎵', `Got ${event.track.kind} from ${odliterId}`);
 
@@ -357,7 +353,6 @@ function setupAudio(odliterId, stream) {
         log('🔊', `Audio playing for ${odliterId}`);
     }).catch(err => {
         log('⚠️', `Audio blocked for ${odliterId}`);
-        // Add click to play
         document.onclick = () => {
             audio.play();
             document.onclick = null;
@@ -703,7 +698,7 @@ async function copyRoomCode() {
 // ========================================
 function initEventListeners() {
     if (!elements.createRoomBtn) {
-        console.error('DOM elements not found - waiting for DOMContentLoaded');
+        console.error('DOM elements not found');
         return false;
     }
 
@@ -739,15 +734,14 @@ function initEventListeners() {
 // ========================================
 // Init
 // ========================================
-function init() {
+async function init() {
+    await fetchIceServers();
     initSocket();
     if (initEventListeners()) {
         log('🚀', 'App initialized');
-        log('📡', `${ICE_SERVERS.iceServers.length} ICE servers configured`);
     }
 }
 
-// Wait for DOM to be ready
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
 } else {

@@ -15,6 +15,39 @@ const io = new Server(server, {
 // Serve static files from client folder
 app.use(express.static(path.join(__dirname, '../client')));
 
+// ICE server configuration endpoint
+// Free TURN servers from: https://gist.github.com/sagivo/3a4b2f2c7ac6e1b5267c2f1f59ac6c6b
+app.get('/api/ice-servers', (req, res) => {
+  const iceServers = [
+    // Google STUN (always works)
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+
+    // Free TURN servers
+    {
+      urls: 'turn:numb.viagenie.ca',
+      username: 'webrtc@live.com',
+      credential: 'muazkh'
+    },
+    {
+      urls: 'turn:turn.bistri.com:80',
+      username: 'homeo',
+      credential: 'homeo'
+    },
+    {
+      urls: 'turn:turn.anyfirewall.com:443?transport=tcp',
+      username: 'webrtc',
+      credential: 'webrtc'
+    }
+  ];
+
+  console.log('ICE servers requested');
+  res.json({ iceServers });
+});
+
 // Room management
 const rooms = new Map();
 
@@ -121,28 +154,6 @@ io.on('connection', (socket) => {
     socket.to(targetId).emit('signal', {
       senderId: socket.id,
       signal
-    });
-  });
-
-  // Keep legacy handlers for backward compatibility
-  socket.on('offer', ({ targetId, offer }) => {
-    socket.to(targetId).emit('offer', {
-      senderId: socket.id,
-      offer
-    });
-  });
-
-  socket.on('answer', ({ targetId, answer }) => {
-    socket.to(targetId).emit('answer', {
-      senderId: socket.id,
-      answer
-    });
-  });
-
-  socket.on('ice-candidate', ({ targetId, candidate }) => {
-    socket.to(targetId).emit('ice-candidate', {
-      senderId: socket.id,
-      candidate
     });
   });
 
