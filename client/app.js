@@ -2,18 +2,26 @@
 // WebRTC Voice & Video Communication App
 // ========================================
 
-// ICE Servers - fetched from server or fallback
-let iceConfig = null;
-
-// Fallback ICE servers
-const FALLBACK_ICE_SERVERS = {
+// ICE Servers - combination of reliable STUN servers
+const ICE_SERVERS = {
     iceServers: [
+        // Google STUN (most reliable)
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
         { urls: 'stun:stun3.l.google.com:19302' },
         { urls: 'stun:stun4.l.google.com:19302' },
-        // Free TURN servers from gist
+
+        // Cloudflare STUN
+        { urls: 'stun:stun.cloudflare.com:3478' },
+
+        // Mozilla STUN
+        { urls: 'stun:stun.services.mozilla.com:3478' },
+
+        // Twilio STUN (free)
+        { urls: 'stun:global.stun.twilio.com:3478' },
+
+        // Free TURN servers (may or may not work)
         {
             urls: 'turn:numb.viagenie.ca',
             username: 'webrtc@live.com',
@@ -77,25 +85,9 @@ const elements = {
     remoteAudioContainer: document.getElementById('remote-audio-container')
 };
 
-// Logging
+// Logging with timestamps
 function log(emoji, msg, ...args) {
-    const time = new Date().toLocaleTimeString();
-    console.log(`${emoji} [${time}] ${msg}`, ...args);
-}
-
-// ========================================
-// Fetch ICE Servers
-// ========================================
-async function fetchIceServers() {
-    try {
-        const res = await fetch('/api/ice-servers');
-        const data = await res.json();
-        iceConfig = { iceServers: data.iceServers, iceCandidatePoolSize: 10 };
-        log('📡', `Got ${data.iceServers.length} ICE servers from API`);
-    } catch (e) {
-        log('⚠️', 'Using fallback ICE servers');
-        iceConfig = FALLBACK_ICE_SERVERS;
-    }
+    console.log(`${emoji} [${new Date().toLocaleTimeString()}] ${msg}`, ...args);
 }
 
 // ========================================
@@ -111,7 +103,6 @@ function initSocket() {
 
     socket.on('disconnect', () => {
         log('❌', 'Disconnected');
-        showError('Connection lost. Please refresh.');
     });
 
     socket.on('user-joined', async ({ odliterId, userName: peerName }) => {
@@ -144,7 +135,7 @@ async function handleSignal(senderId, signal) {
     let peerData = peers.get(senderId);
 
     if (!peerData) {
-        log('🔗', `Creating connection for ${senderId} (received signal first)`);
+        log('🔗', `Creating connection for ${senderId}`);
         addParticipantCard(senderId, 'Participant');
         await createConnection(senderId, 'Participant', false);
         peerData = peers.get(senderId);
@@ -154,54 +145,41 @@ async function handleSignal(senderId, signal) {
 
     try {
         if (signal.type === 'offer') {
-            log('📥', `Got OFFER from ${senderId}, state: ${pc.signalingState}`);
+            log('📥', `Offer from ${senderId}`);
 
-            // Handle offer collision
-            const collision = pc.signalingState !== 'stable';
-            if (collision) {
-                if (!peerData.polite) {
-                    log('⚠️', 'Collision - we are impolite, ignoring offer');
-                    return;
-                }
-                log('⚠️', 'Collision - we are polite, rolling back');
+            if (pc.signalingState !== 'stable') {
+                if (!peerData.polite) return;
                 await pc.setLocalDescription({ type: 'rollback' });
             }
 
             await pc.setRemoteDescription(signal);
-            log('📝', `Remote desc set for ${senderId}`);
 
-            // Flush ICE buffer
-            for (const c of peerData.iceBuffer) {
+            // Flush buffered candidates
+            while (peerData.iceBuffer.length > 0) {
+                const c = peerData.iceBuffer.shift();
                 try { await pc.addIceCandidate(c); } catch (e) { }
             }
-            peerData.iceBuffer = [];
 
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
-            log('📤', `Sending ANSWER to ${senderId}`);
+            log('📤', `Answer to ${senderId}`);
             sendSignal(senderId, pc.localDescription);
 
         } else if (signal.type === 'answer') {
-            log('📥', `Got ANSWER from ${senderId}, state: ${pc.signalingState}`);
-
+            log('📥', `Answer from ${senderId}`);
             if (pc.signalingState === 'have-local-offer') {
                 await pc.setRemoteDescription(signal);
-                log('📝', `Remote desc (answer) set for ${senderId}`);
-
-                // Flush ICE buffer
-                for (const c of peerData.iceBuffer) {
+                while (peerData.iceBuffer.length > 0) {
+                    const c = peerData.iceBuffer.shift();
                     try { await pc.addIceCandidate(c); } catch (e) { }
                 }
-                peerData.iceBuffer = [];
             }
 
         } else if (signal.candidate) {
             if (pc.remoteDescription) {
                 await pc.addIceCandidate(signal);
-                log('🧊', `Added ICE candidate from ${senderId}`);
             } else {
                 peerData.iceBuffer.push(signal);
-                log('🧊', `Buffered ICE candidate from ${senderId}`);
             }
         }
     } catch (err) {
@@ -217,16 +195,12 @@ function sendSignal(targetId, signal) {
 // Peer Connection
 // ========================================
 async function createConnection(odliterId, peerName, initiator) {
-    if (peers.has(odliterId)) {
-        log('⚠️', `Connection already exists for ${odliterId}`);
-        return;
-    }
+    if (peers.has(odliterId)) return;
 
-    log('🔗', `Creating connection to ${odliterId}, initiator: ${initiator}`);
+    log('🔗', `Creating PC for ${odliterId}, initiator: ${initiator}`);
 
-    const pc = new RTCPeerConnection(iceConfig || FALLBACK_ICE_SERVERS);
+    const pc = new RTCPeerConnection(ICE_SERVERS);
 
-    // Store peer data
     peers.set(odliterId, {
         pc,
         userName: peerName,
@@ -234,11 +208,10 @@ async function createConnection(odliterId, peerName, initiator) {
         iceBuffer: []
     });
 
-    // Add local tracks
+    // Add tracks
     if (localStream) {
-        const tracks = localStream.getTracks();
-        log('🎤', `Adding ${tracks.length} local tracks`);
-        tracks.forEach(track => {
+        localStream.getTracks().forEach(track => {
+            log('🎤', `Adding ${track.kind} track`);
             pc.addTrack(track, localStream);
         });
     }
@@ -246,28 +219,22 @@ async function createConnection(odliterId, peerName, initiator) {
     // ICE candidate
     pc.onicecandidate = ({ candidate }) => {
         if (candidate) {
-            log('🧊', `Sending ICE to ${odliterId}`);
             sendSignal(odliterId, candidate);
         }
     };
 
-    // ICE gathering state
-    pc.onicegatheringstatechange = () => {
-        log('🧊', `ICE gathering [${odliterId}]: ${pc.iceGatheringState}`);
-    };
-
-    // ICE connection state
+    // ICE state with detailed logging
     pc.oniceconnectionstatechange = () => {
         const state = pc.iceConnectionState;
-        log('🧊', `ICE connection [${odliterId}]: ${state}`);
+        log('🧊', `ICE [${odliterId}]: ${state}`);
 
         if (state === 'connected' || state === 'completed') {
-            log('✅', `ICE CONNECTED with ${odliterId}!`);
+            log('✅', `CONNECTED! Media should flow now`);
             updateStatus(odliterId, 'connected');
         } else if (state === 'checking') {
             updateStatus(odliterId, 'checking');
         } else if (state === 'failed') {
-            log('❌', `ICE FAILED with ${odliterId}`);
+            log('❌', `FAILED - trying ICE restart`);
             updateStatus(odliterId, 'failed');
             pc.restartIce();
         } else if (state === 'disconnected') {
@@ -275,16 +242,19 @@ async function createConnection(odliterId, peerName, initiator) {
         }
     };
 
-    // Connection state
-    pc.onconnectionstatechange = () => {
-        log('🔌', `Connection [${odliterId}]: ${pc.connectionState}`);
+    // Gathering state
+    pc.onicegatheringstatechange = () => {
+        log('🧊', `Gathering [${odliterId}]: ${pc.iceGatheringState}`);
+        if (pc.iceGatheringState === 'complete') {
+            log('🧊', `All ICE candidates gathered for ${odliterId}`);
+        }
     };
 
-    // Incoming tracks
+    // Track received
     pc.ontrack = (event) => {
         log('🎵', `Got ${event.track.kind} from ${odliterId}`);
 
-        if (event.streams && event.streams[0]) {
+        if (event.streams[0]) {
             if (event.track.kind === 'audio') {
                 setupAudio(odliterId, event.streams[0]);
             } else if (event.track.kind === 'video') {
@@ -300,44 +270,34 @@ async function createConnection(odliterId, peerName, initiator) {
             const offer = await pc.createOffer();
             if (pc.signalingState !== 'stable') return;
             await pc.setLocalDescription(offer);
-            log('📤', `Sending OFFER to ${odliterId}`);
+            log('📤', `Offer to ${odliterId}`);
             sendSignal(odliterId, pc.localDescription);
         } catch (e) {
             log('❌', 'Negotiation error:', e);
         }
     };
-
-    log('✅', `Peer connection created for ${odliterId}`);
 }
 
 function updateStatus(odliterId, state) {
     const el = document.getElementById(`status-${odliterId}`);
     if (!el) return;
-
     const span = el.querySelector('span');
 
-    switch (state) {
-        case 'connected':
-            el.style.background = 'rgba(39, 174, 96, 0.9)';
-            span.textContent = 'Connected';
-            break;
-        case 'checking':
-            el.style.background = 'rgba(241, 196, 15, 0.9)';
-            span.textContent = 'Connecting...';
-            break;
-        case 'failed':
-            el.style.background = 'rgba(231, 76, 60, 0.9)';
-            span.textContent = 'Failed';
-            break;
-        case 'disconnected':
-            el.style.background = 'rgba(241, 196, 15, 0.9)';
-            span.textContent = 'Reconnecting...';
-            break;
+    const states = {
+        'connected': { bg: 'rgba(39,174,96,0.9)', text: 'Connected' },
+        'checking': { bg: 'rgba(241,196,15,0.9)', text: 'Connecting...' },
+        'failed': { bg: 'rgba(231,76,60,0.9)', text: 'Failed' },
+        'disconnected': { bg: 'rgba(241,196,15,0.9)', text: 'Reconnecting...' }
+    };
+
+    if (states[state]) {
+        el.style.background = states[state].bg;
+        span.textContent = states[state].text;
     }
 }
 
 function setupAudio(odliterId, stream) {
-    log('🔊', `Setting up audio for ${odliterId}`);
+    log('🔊', `Audio setup for ${odliterId}`);
 
     let audio = document.getElementById(`audio-${odliterId}`);
     if (!audio) {
@@ -349,20 +309,13 @@ function setupAudio(odliterId, stream) {
     }
 
     audio.srcObject = stream;
-    audio.play().then(() => {
-        log('🔊', `Audio playing for ${odliterId}`);
-    }).catch(err => {
-        log('⚠️', `Audio blocked for ${odliterId}`);
-        document.onclick = () => {
-            audio.play();
-            document.onclick = null;
-        };
+    audio.play().catch(() => {
+        log('⚠️', 'Audio blocked - click page to enable');
+        document.onclick = () => { audio.play(); document.onclick = null; };
     });
 }
 
 function setupVideo(odliterId, stream) {
-    log('📺', `Setting up video for ${odliterId}`);
-
     const card = document.getElementById(`participant-${odliterId}`);
     if (!card) return;
 
@@ -382,10 +335,7 @@ function setupVideo(odliterId, stream) {
 
 function removePeer(odliterId) {
     const p = peers.get(odliterId);
-    if (p) {
-        p.pc.close();
-        peers.delete(odliterId);
-    }
+    if (p) { p.pc.close(); peers.delete(odliterId); }
     document.getElementById(`audio-${odliterId}`)?.remove();
     document.getElementById(`participant-${odliterId}`)?.remove();
 }
@@ -400,7 +350,7 @@ async function getLocalStream() {
             audio: { echoCancellation: true, noiseSuppression: true },
             video: false
         });
-        log('✅', 'Got microphone');
+        log('✅', 'Microphone ready');
         return true;
     } catch (err) {
         log('❌', 'Mic error:', err);
@@ -429,20 +379,14 @@ async function toggleVideo() {
             const stream = await navigator.mediaDevices.getUserMedia({ video: true });
             const track = stream.getVideoTracks()[0];
             localStream.addTrack(track);
-
             peers.forEach(p => p.pc.addTrack(track, localStream));
-
             showLocalVideo(stream);
             isVideoEnabled = true;
         } else {
-            localStream.getVideoTracks().forEach(t => {
-                t.stop();
-                localStream.removeTrack(t);
-            });
+            localStream.getVideoTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
             hideLocalVideo();
             isVideoEnabled = false;
         }
-
         elements.videoBtn.classList.toggle('active', isVideoEnabled);
         socket.emit('video-status', { isVideoEnabled });
     } catch (e) {
@@ -453,7 +397,6 @@ async function toggleVideo() {
 function showLocalVideo(stream) {
     const card = document.getElementById('participant-self');
     if (!card) return;
-
     let video = card.querySelector('video');
     if (!video) {
         video = document.createElement('video');
@@ -464,7 +407,6 @@ function showLocalVideo(stream) {
         card.insertBefore(video, card.firstChild);
     }
     video.srcObject = stream;
-
     const avatar = card.querySelector('.participant-avatar');
     if (avatar) avatar.style.display = 'none';
 }
@@ -483,7 +425,6 @@ async function toggleScreenShare() {
             const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
             const track = stream.getVideoTracks()[0];
             track.onended = () => stopScreenShare();
-
             peers.forEach(p => p.pc.addTrack(track, stream));
             addScreenCard(stream);
             isScreenSharing = true;
@@ -509,22 +450,18 @@ function stopScreenShare() {
 
 function addScreenCard(stream) {
     if (document.getElementById('participant-screen')) return;
-
     const card = document.createElement('div');
     card.id = 'participant-screen';
     card.className = 'participant-card';
-
     const video = document.createElement('video');
     video.autoplay = true;
     video.muted = true;
     video.srcObject = stream;
     card.appendChild(video);
-
     const label = document.createElement('span');
     label.className = 'participant-name';
     label.textContent = 'Your Screen';
     card.appendChild(label);
-
     elements.participantsGrid.insertBefore(card, elements.participantsGrid.firstChild);
 }
 
@@ -534,7 +471,7 @@ function addScreenCard(stream) {
 function showNameModal(action) {
     pendingAction = action;
     elements.nameModal.classList.remove('hidden');
-    elements.userNameInput.focus();
+    setTimeout(() => elements.userNameInput.focus(), 100);
 }
 
 function hideNameModal() {
@@ -544,7 +481,10 @@ function hideNameModal() {
 
 async function confirmName() {
     const name = elements.userNameInput.value.trim();
-    if (!name) return;
+    if (!name) {
+        elements.userNameInput.style.border = '2px solid #e74c3c';
+        return;
+    }
 
     userName = name;
     const action = pendingAction;
@@ -579,13 +519,8 @@ function joinRoomInternal(roomCode) {
             currentRoomCode = roomCode;
             showRoomView();
             addParticipantCard('self', userName, true);
-
-            log('🚪', `Joined ${roomCode} with ${res.participants.length} others`);
-
-            res.participants.forEach(p => {
-                addParticipantCard(p.odliterId, p.userName);
-            });
-
+            log('🚪', `Joined ${roomCode}`);
+            res.participants.forEach(p => addParticipantCard(p.odliterId, p.userName));
             updateParticipantCount(res.participantCount);
         } else {
             showError(res.error || 'Failed to join.');
@@ -597,23 +532,14 @@ function leaveRoom() {
     socket.emit('leave-room');
     peers.forEach(p => p.pc.close());
     peers.clear();
-
-    if (localStream) {
-        localStream.getTracks().forEach(t => t.stop());
-        localStream = null;
-    }
-
+    if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
     elements.remoteAudioContainer.innerHTML = '';
     elements.participantsGrid.innerHTML = '';
     currentRoomCode = null;
-    isMuted = false;
-    isVideoEnabled = false;
-    isScreenSharing = false;
-
+    isMuted = isVideoEnabled = isScreenSharing = false;
     elements.muteBtn.classList.remove('muted');
     elements.videoBtn.classList.remove('active');
     elements.screenBtn.classList.remove('active');
-
     showLandingView();
 }
 
@@ -697,32 +623,21 @@ async function copyRoomCode() {
 // Event Listeners
 // ========================================
 function initEventListeners() {
-    if (!elements.createRoomBtn) {
-        console.error('DOM elements not found');
-        return false;
-    }
+    if (!elements.createRoomBtn) return false;
 
     elements.createRoomBtn.addEventListener('click', createRoom);
     elements.joinRoomBtn.addEventListener('click', joinRoom);
-    elements.roomCodeInput.addEventListener('keypress', e => {
-        if (e.key === 'Enter') joinRoom();
-    });
-
+    elements.roomCodeInput.addEventListener('keypress', e => e.key === 'Enter' && joinRoom());
     elements.muteBtn.addEventListener('click', toggleMute);
     elements.videoBtn.addEventListener('click', toggleVideo);
     elements.screenBtn.addEventListener('click', toggleScreenShare);
     elements.leaveBtn.addEventListener('click', leaveRoom);
     elements.copyCodeBtn.addEventListener('click', copyRoomCode);
-
     elements.confirmNameBtn.addEventListener('click', confirmName);
-    elements.userNameInput.addEventListener('keydown', e => {
-        if (e.key === 'Enter') confirmName();
-    });
-
+    elements.userNameInput.addEventListener('keydown', e => e.key === 'Enter' && confirmName());
     elements.grantPermissionBtn.addEventListener('click', async () => {
         if (await getLocalStream()) elements.permissionModal.classList.add('hidden');
     });
-
     elements.roomCodeInput.addEventListener('input', e => {
         e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
         hideError();
@@ -734,11 +649,11 @@ function initEventListeners() {
 // ========================================
 // Init
 // ========================================
-async function init() {
-    await fetchIceServers();
+function init() {
     initSocket();
     if (initEventListeners()) {
-        log('🚀', 'App initialized');
+        log('🚀', 'App ready');
+        log('📡', `${ICE_SERVERS.iceServers.length} ICE servers`);
     }
 }
 
