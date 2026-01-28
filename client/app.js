@@ -702,33 +702,54 @@ async function copyRoomCode() {
 // Event Listeners
 // ========================================
 function initEventListeners() {
-    elements.createRoomBtn.onclick = createRoom;
-    elements.joinRoomBtn.onclick = joinRoom;
-    elements.roomCodeInput.onkeypress = e => e.key === 'Enter' && joinRoom();
+    if (!elements.createRoomBtn) {
+        console.error('DOM elements not found - waiting for DOMContentLoaded');
+        return false;
+    }
 
-    elements.muteBtn.onclick = toggleMute;
-    elements.videoBtn.onclick = toggleVideo;
-    elements.screenBtn.onclick = toggleScreenShare;
-    elements.leaveBtn.onclick = leaveRoom;
-    elements.copyCodeBtn.onclick = copyRoomCode;
+    elements.createRoomBtn.addEventListener('click', createRoom);
+    elements.joinRoomBtn.addEventListener('click', joinRoom);
+    elements.roomCodeInput.addEventListener('keypress', e => {
+        if (e.key === 'Enter') joinRoom();
+    });
 
-    elements.confirmNameBtn.onclick = confirmName;
-    elements.userNameInput.onkeypress = e => e.key === 'Enter' && confirmName();
+    elements.muteBtn.addEventListener('click', toggleMute);
+    elements.videoBtn.addEventListener('click', toggleVideo);
+    elements.screenBtn.addEventListener('click', toggleScreenShare);
+    elements.leaveBtn.addEventListener('click', leaveRoom);
+    elements.copyCodeBtn.addEventListener('click', copyRoomCode);
 
-    elements.grantPermissionBtn.onclick = async () => {
+    elements.confirmNameBtn.addEventListener('click', confirmName);
+    elements.userNameInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') confirmName();
+    });
+
+    elements.grantPermissionBtn.addEventListener('click', async () => {
         if (await getLocalStream()) elements.permissionModal.classList.add('hidden');
-    };
+    });
 
-    elements.roomCodeInput.oninput = e => {
+    elements.roomCodeInput.addEventListener('input', e => {
         e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
         hideError();
-    };
+    });
+
+    return true;
 }
 
 // ========================================
 // Init
 // ========================================
-initSocket();
-initEventListeners();
-log('🚀', 'App initialized');
-log('📡', `${ICE_SERVERS.iceServers.length} ICE servers configured`);
+function init() {
+    initSocket();
+    if (initEventListeners()) {
+        log('🚀', 'App initialized');
+        log('📡', `${ICE_SERVERS.iceServers.length} ICE servers configured`);
+    }
+}
+
+// Wait for DOM to be ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+} else {
+    init();
+}
