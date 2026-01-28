@@ -484,12 +484,13 @@ async function confirmName() {
     }
 
     userName = name;
+    const action = pendingAction; // Save action before clearing
     hideNameModal();
 
     const hasPermission = await getLocalStream();
     if (!hasPermission) return;
 
-    if (pendingAction === 'create') {
+    if (action === 'create') {
         socket.emit('create-room', (response) => {
             if (response.success) {
                 joinRoomInternal(response.roomCode);
@@ -497,7 +498,7 @@ async function confirmName() {
                 showError('Failed to create room. Please try again.');
             }
         });
-    } else if (pendingAction === 'join') {
+    } else if (action === 'join') {
         const roomCode = elements.roomCodeInput.value.trim().toUpperCase().replace(/-/g, '');
         joinRoomInternal(roomCode);
     }
