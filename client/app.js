@@ -2,15 +2,31 @@
 // WebRTC Voice & Video Communication App
 // ========================================
 
-// Configuration
+// ICE Configuration with STUN and TURN servers
+// TURN servers are CRITICAL for production - they relay media when direct connection fails
 const ICE_SERVERS = {
     iceServers: [
+        // STUN servers - help discover public IP
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' }
-    ]
+        // Free TURN servers from OpenRelay project
+        {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        },
+        {
+            urls: 'turn:openrelay.metered.ca:443',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        },
+        {
+            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        }
+    ],
+    iceCandidatePoolSize: 10
 };
 
 // State
@@ -23,11 +39,7 @@ let isScreenSharing = false;
 let userName = '';
 let pendingAction = null;
 
-// Track senders for replacement
-let videoSender = null;
-let screenSender = null;
-
-// Peer connections map: odliterId -> { pc, userName, audioElement, videoElement }
+// Peer connections map: odliterId -> { pc, userName, iceCandidateBuffer, remoteDescriptionSet }
 const peers = new Map();
 
 // DOM Elements
@@ -78,10 +90,8 @@ function initSocket() {
     // New user joined - we are existing, so we create offer
     socket.on('user-joined', async ({ odliterId, userName: peerName }) => {
         console.log(`👤 User joined: ${odliterId} (${peerName})`);
-
-        // Create peer connection and send offer
-        await createPeerConnection(odliterId, peerName, true);
         addParticipantCard(odliterId, peerName);
+        await createPeerConnection(odliterId, peerName, true);
     });
 
     socket.on('user-left', ({ odliterId }) => {
@@ -89,67 +99,22 @@ function initSocket() {
         removePeer(odliterId);
     });
 
-    // Received offer - we are new or receiving from existing
+    // Received offer
     socket.on('offer', async ({ senderId, offer }) => {
         console.log(`📨 Received offer from: ${senderId}`);
-
-        try {
-            let peerData = peers.get(senderId);
-
-            if (!peerData) {
-                // Create new peer connection without sending offer
-                await createPeerConnection(senderId, 'Participant', false);
-                peerData = peers.get(senderId);
-                addParticipantCard(senderId, 'Participant');
-            }
-
-            const pc = peerData.pc;
-
-            // Set remote description (the offer)
-            await pc.setRemoteDescription(new RTCSessionDescription(offer));
-            console.log(`📝 Set remote description for ${senderId}`);
-
-            // Create and send answer
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            console.log(`📝 Set local description (answer) for ${senderId}`);
-
-            socket.emit('answer', { targetId: senderId, answer });
-            console.log(`📤 Sent answer to ${senderId}`);
-
-        } catch (err) {
-            console.error('Error handling offer:', err);
-        }
+        await handleOffer(senderId, offer);
     });
 
     // Received answer
     socket.on('answer', async ({ senderId, answer }) => {
         console.log(`📨 Received answer from: ${senderId}`);
-
-        try {
-            const peerData = peers.get(senderId);
-            if (peerData) {
-                await peerData.pc.setRemoteDescription(new RTCSessionDescription(answer));
-                console.log(`📝 Set remote description (answer) for ${senderId}`);
-            }
-        } catch (err) {
-            console.error('Error handling answer:', err);
-        }
+        await handleAnswer(senderId, answer);
     });
 
     // ICE candidate
     socket.on('ice-candidate', async ({ senderId, candidate }) => {
         if (!candidate) return;
-
-        try {
-            const peerData = peers.get(senderId);
-            if (peerData && peerData.pc.remoteDescription) {
-                await peerData.pc.addIceCandidate(new RTCIceCandidate(candidate));
-                console.log(`🧊 Added ICE candidate from ${senderId}`);
-            }
-        } catch (err) {
-            console.error('Error adding ICE candidate:', err);
-        }
+        await handleIceCandidate(senderId, candidate);
     });
 
     socket.on('participant-count', ({ count }) => {
@@ -163,15 +128,119 @@ function initSocket() {
     socket.on('user-video-status', ({ odliterId, isVideoEnabled }) => {
         updatePeerVideoStatus(odliterId, isVideoEnabled);
     });
+}
 
-    // Handle renegotiation needed from peer
-    socket.on('renegotiate', async ({ senderId }) => {
-        console.log(`🔄 Renegotiation requested by ${senderId}`);
-        const peerData = peers.get(senderId);
-        if (peerData) {
-            await sendOffer(senderId, peerData.pc);
+// ========================================
+// Offer/Answer/ICE Handlers
+// ========================================
+async function handleOffer(senderId, offer) {
+    try {
+        let peerData = peers.get(senderId);
+
+        if (!peerData) {
+            // New peer - create connection first
+            addParticipantCard(senderId, 'Participant');
+            await createPeerConnection(senderId, 'Participant', false);
+            peerData = peers.get(senderId);
         }
-    });
+
+        const pc = peerData.pc;
+
+        // Check if we can set remote description
+        if (pc.signalingState !== 'stable' && pc.signalingState !== 'have-local-offer') {
+            console.warn(`Cannot set remote offer in state: ${pc.signalingState}`);
+            return;
+        }
+
+        // Set remote description
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        peerData.remoteDescriptionSet = true;
+        console.log(`📝 Remote description (offer) set for ${senderId}`);
+
+        // Flush buffered ICE candidates
+        await flushIceCandidates(senderId);
+
+        // Create and send answer
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        console.log(`📝 Local description (answer) set for ${senderId}`);
+
+        socket.emit('answer', { targetId: senderId, answer });
+        console.log(`📤 Sent answer to ${senderId}`);
+
+    } catch (err) {
+        console.error('Error handling offer:', err);
+    }
+}
+
+async function handleAnswer(senderId, answer) {
+    try {
+        const peerData = peers.get(senderId);
+        if (!peerData) {
+            console.warn(`No peer found for ${senderId}`);
+            return;
+        }
+
+        const pc = peerData.pc;
+
+        if (pc.signalingState !== 'have-local-offer') {
+            console.warn(`Cannot set remote answer in state: ${pc.signalingState}`);
+            return;
+        }
+
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        peerData.remoteDescriptionSet = true;
+        console.log(`📝 Remote description (answer) set for ${senderId}`);
+
+        // Flush buffered ICE candidates
+        await flushIceCandidates(senderId);
+
+    } catch (err) {
+        console.error('Error handling answer:', err);
+    }
+}
+
+async function handleIceCandidate(senderId, candidate) {
+    try {
+        let peerData = peers.get(senderId);
+
+        // If no peer yet, buffer the candidate
+        if (!peerData) {
+            console.log(`🧊 Buffering ICE candidate (no peer yet) from ${senderId}`);
+            // We'll receive the offer soon, store candidates temporarily
+            return;
+        }
+
+        // If remote description not set, buffer the candidate
+        if (!peerData.remoteDescriptionSet) {
+            console.log(`🧊 Buffering ICE candidate from ${senderId}`);
+            peerData.iceCandidateBuffer.push(candidate);
+            return;
+        }
+
+        // Add ICE candidate directly
+        await peerData.pc.addIceCandidate(new RTCIceCandidate(candidate));
+        console.log(`🧊 Added ICE candidate from ${senderId}`);
+
+    } catch (err) {
+        console.error('Error handling ICE candidate:', err);
+    }
+}
+
+async function flushIceCandidates(odliterId) {
+    const peerData = peers.get(odliterId);
+    if (!peerData || !peerData.iceCandidateBuffer.length) return;
+
+    console.log(`🧊 Flushing ${peerData.iceCandidateBuffer.length} buffered ICE candidates for ${odliterId}`);
+
+    for (const candidate of peerData.iceCandidateBuffer) {
+        try {
+            await peerData.pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (err) {
+            console.error('Error adding buffered ICE candidate:', err);
+        }
+    }
+    peerData.iceCandidateBuffer = [];
 }
 
 // ========================================
@@ -180,22 +249,40 @@ function initSocket() {
 async function createPeerConnection(odliterId, peerName, isInitiator) {
     console.log(`🔗 Creating peer connection for ${odliterId}, initiator: ${isInitiator}`);
 
+    // Check if connection already exists
+    if (peers.has(odliterId)) {
+        console.log(`Connection already exists for ${odliterId}`);
+        return peers.get(odliterId).pc;
+    }
+
     const pc = new RTCPeerConnection(ICE_SERVERS);
 
-    // CRITICAL: Add local tracks BEFORE creating offer
+    // Store peer data FIRST (before adding tracks which triggers negotiationneeded)
+    peers.set(odliterId, {
+        pc,
+        userName: peerName,
+        isInitiator,
+        remoteDescriptionSet: false,
+        iceCandidateBuffer: [],
+        makingOffer: false,
+        ignoreOffer: false
+    });
+
+    // Add local audio tracks
     if (localStream) {
-        console.log(`🎤 Adding ${localStream.getTracks().length} local tracks`);
+        console.log(`🎤 Adding ${localStream.getTracks().length} local tracks to ${odliterId}`);
         localStream.getTracks().forEach(track => {
-            console.log(`  → Adding ${track.kind} track: ${track.label}`);
+            console.log(`  → Adding ${track.kind} track: ${track.label}, enabled: ${track.enabled}`);
             pc.addTrack(track, localStream);
         });
     } else {
-        console.warn('⚠️ No local stream available when creating peer connection');
+        console.warn('⚠️ No localStream when creating peer connection!');
     }
 
     // ICE candidate handler
     pc.onicecandidate = (event) => {
         if (event.candidate) {
+            console.log(`🧊 Sending ICE candidate to ${odliterId}`);
             socket.emit('ice-candidate', {
                 targetId: odliterId,
                 candidate: event.candidate
@@ -203,11 +290,16 @@ async function createPeerConnection(odliterId, peerName, isInitiator) {
         }
     };
 
+    // ICE gathering state
+    pc.onicegatheringstatechange = () => {
+        console.log(`🧊 ICE gathering state with ${odliterId}: ${pc.iceGatheringState}`);
+    };
+
     // ICE connection state
     pc.oniceconnectionstatechange = () => {
-        console.log(`🧊 ICE state with ${odliterId}: ${pc.iceConnectionState}`);
+        console.log(`🧊 ICE connection state with ${odliterId}: ${pc.iceConnectionState}`);
         if (pc.iceConnectionState === 'failed') {
-            console.log('Restarting ICE...');
+            console.log('⚠️ ICE failed, attempting restart...');
             pc.restartIce();
         }
     };
@@ -215,67 +307,61 @@ async function createPeerConnection(odliterId, peerName, isInitiator) {
     // Connection state
     pc.onconnectionstatechange = () => {
         console.log(`🔌 Connection state with ${odliterId}: ${pc.connectionState}`);
-        if (pc.connectionState === 'connected') {
-            console.log(`✅ Fully connected with ${odliterId}`);
-        }
-        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-            console.log(`❌ Connection failed/disconnected with ${odliterId}`);
-        }
+        updateConnectionIndicator(odliterId, pc.connectionState);
     };
 
     // CRITICAL: Handle incoming tracks
     pc.ontrack = (event) => {
         console.log(`🎵 Received ${event.track.kind} track from ${odliterId}`);
-
-        const peerData = peers.get(odliterId);
-        if (!peerData) return;
+        console.log(`   Track ID: ${event.track.id}, Label: ${event.track.label}`);
+        console.log(`   Streams: ${event.streams.length}`);
 
         if (event.track.kind === 'audio') {
-            handleRemoteAudio(odliterId, event.streams[0]);
+            handleRemoteAudio(odliterId, event.streams[0], event.track);
         } else if (event.track.kind === 'video') {
-            handleRemoteVideo(odliterId, event.streams[0]);
+            handleRemoteVideo(odliterId, event.streams[0], event.track);
         }
     };
 
-    // Handle negotiation needed (when tracks are added/removed)
-    pc.onnegotiationneeded = async () => {
-        console.log(`🔄 Negotiation needed with ${odliterId}`);
-        // Only the initiator should send a new offer
-        if (isInitiator) {
-            await sendOffer(odliterId, pc);
-        } else {
-            // Ask the other peer to renegotiate
-            socket.emit('renegotiate', { targetId: odliterId });
-        }
-    };
-
-    // Store peer connection
-    peers.set(odliterId, {
-        pc,
-        userName: peerName,
-        isInitiator
-    });
-
-    // If initiator, send offer
+    // If initiator, create and send offer
     if (isInitiator) {
-        await sendOffer(odliterId, pc);
+        try {
+            console.log(`📤 Creating offer for ${odliterId}...`);
+            const offer = await pc.createOffer({
+                offerToReceiveAudio: true,
+                offerToReceiveVideo: true
+            });
+            await pc.setLocalDescription(offer);
+            console.log(`📝 Local description (offer) set for ${odliterId}`);
+
+            socket.emit('offer', { targetId: odliterId, offer });
+            console.log(`📤 Sent offer to ${odliterId}`);
+        } catch (err) {
+            console.error('Error creating offer:', err);
+        }
     }
 
     return pc;
 }
 
-async function sendOffer(odliterId, pc) {
-    try {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        console.log(`📤 Sending offer to ${odliterId}`);
-        socket.emit('offer', { targetId: odliterId, offer });
-    } catch (err) {
-        console.error('Error creating/sending offer:', err);
+function updateConnectionIndicator(odliterId, state) {
+    const card = document.getElementById(`participant-${odliterId}`);
+    if (!card) return;
+
+    const status = card.querySelector('.participant-status');
+    if (!status) return;
+
+    if (state === 'connected') {
+        status.style.background = 'rgba(39, 174, 96, 0.8)';
+        console.log(`✅ Fully connected with ${odliterId}`);
+    } else if (state === 'connecting' || state === 'new') {
+        status.style.background = 'rgba(241, 196, 15, 0.8)';
+    } else if (state === 'failed' || state === 'disconnected') {
+        status.style.background = 'rgba(231, 76, 60, 0.8)';
     }
 }
 
-function handleRemoteAudio(odliterId, stream) {
+function handleRemoteAudio(odliterId, stream, track) {
     console.log(`🔊 Setting up remote audio for ${odliterId}`);
 
     let audio = document.getElementById(`audio-${odliterId}`);
@@ -284,21 +370,42 @@ function handleRemoteAudio(odliterId, stream) {
         audio.id = `audio-${odliterId}`;
         audio.autoplay = true;
         audio.playsInline = true;
+        audio.volume = 1.0;
         elements.remoteAudioContainer.appendChild(audio);
+        console.log(`🔊 Created audio element for ${odliterId}`);
     }
 
+    // Set the stream as source
     audio.srcObject = stream;
 
-    // Handle autoplay issues
-    audio.play().catch(err => {
-        console.warn('Audio autoplay blocked, waiting for user interaction');
-        document.addEventListener('click', () => {
-            audio.play().catch(e => console.error('Still cannot play:', e));
-        }, { once: true });
-    });
+    // Monitor track state
+    track.onunmute = () => {
+        console.log(`🔊 Audio track unmuted from ${odliterId}`);
+    };
+    track.onmute = () => {
+        console.log(`🔇 Audio track muted from ${odliterId}`);
+    };
+
+    // Force play
+    const playPromise = audio.play();
+    if (playPromise !== undefined) {
+        playPromise.then(() => {
+            console.log(`🔊 Audio playing for ${odliterId}`);
+        }).catch(err => {
+            console.warn(`⚠️ Audio autoplay blocked for ${odliterId}:`, err.message);
+            // Add click handler to resume
+            const resumeAudio = () => {
+                audio.play().then(() => {
+                    console.log(`🔊 Audio resumed for ${odliterId}`);
+                }).catch(e => console.error('Still blocked:', e));
+                document.removeEventListener('click', resumeAudio);
+            };
+            document.addEventListener('click', resumeAudio);
+        });
+    }
 }
 
-function handleRemoteVideo(odliterId, stream) {
+function handleRemoteVideo(odliterId, stream, track) {
     console.log(`📺 Setting up remote video for ${odliterId}`);
 
     const card = document.getElementById(`participant-${odliterId}`);
@@ -312,7 +419,7 @@ function handleRemoteVideo(odliterId, stream) {
         video = document.createElement('video');
         video.autoplay = true;
         video.playsInline = true;
-        video.muted = true; // Remote video should be muted (audio comes from audio element)
+        video.muted = true; // Mute video element (audio comes from separate audio element)
         card.insertBefore(video, card.firstChild);
     }
 
@@ -322,7 +429,7 @@ function handleRemoteVideo(odliterId, stream) {
     const avatar = card.querySelector('.participant-avatar');
     if (avatar) avatar.style.display = 'none';
 
-    video.play().catch(err => console.warn('Video autoplay issue:', err));
+    video.play().catch(err => console.warn('Video play issue:', err));
 }
 
 function removePeer(odliterId) {
@@ -355,7 +462,14 @@ async function getLocalStream() {
             },
             video: false
         });
-        console.log('✅ Got local audio stream');
+
+        // Verify we got tracks
+        const audioTracks = localStream.getAudioTracks();
+        console.log(`✅ Got ${audioTracks.length} audio tracks`);
+        audioTracks.forEach(track => {
+            console.log(`   Track: ${track.label}, enabled: ${track.enabled}, muted: ${track.muted}`);
+        });
+
         return true;
     } catch (err) {
         console.error('❌ Error accessing microphone:', err);
@@ -376,7 +490,7 @@ function toggleMute() {
     isMuted = !isMuted;
     localStream.getAudioTracks().forEach(track => {
         track.enabled = !isMuted;
-        console.log(`🎤 Mic ${isMuted ? 'muted' : 'unmuted'}`);
+        console.log(`🎤 Track ${track.label} enabled: ${track.enabled}`);
     });
 
     elements.muteBtn.classList.toggle('muted', isMuted);
@@ -399,67 +513,62 @@ async function toggleVideo() {
 
             // Get video stream
             const videoStream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 }
-                }
+                video: { width: { ideal: 1280 }, height: { ideal: 720 } }
             });
 
             const videoTrack = videoStream.getVideoTracks()[0];
             console.log('✅ Got video track:', videoTrack.label);
 
-            // Add video track to all peer connections
-            peers.forEach((peerData, odliterId) => {
-                const sender = peerData.pc.getSenders().find(s => s.track?.kind === 'video');
-                if (sender) {
-                    sender.replaceTrack(videoTrack);
-                    console.log(`📹 Replaced video track for ${odliterId}`);
-                } else {
-                    peerData.pc.addTrack(videoTrack, videoStream);
-                    console.log(`📹 Added video track to ${odliterId}`);
+            // Add video track to local stream
+            localStream.addTrack(videoTrack);
+
+            // Add to all peer connections and renegotiate
+            for (const [odliterId, peerData] of peers) {
+                peerData.pc.addTrack(videoTrack, localStream);
+                console.log(`📹 Added video track to ${odliterId}`);
+
+                // Renegotiate
+                if (peerData.isInitiator) {
+                    const offer = await peerData.pc.createOffer();
+                    await peerData.pc.setLocalDescription(offer);
+                    socket.emit('offer', { targetId: odliterId, offer });
                 }
-            });
+            }
 
             // Show local video preview
             showLocalVideo(videoStream);
-
-            // Store track for cleanup
-            localStream.addTrack(videoTrack);
             isVideoEnabled = true;
 
         } else {
             console.log('📹 Disabling video...');
 
-            // Stop video tracks
+            // Stop and remove video track
             localStream.getVideoTracks().forEach(track => {
                 track.stop();
                 localStream.removeTrack(track);
             });
 
             // Remove from peer connections
-            peers.forEach((peerData, odliterId) => {
-                const sender = peerData.pc.getSenders().find(s => s.track?.kind === 'video');
-                if (sender) {
-                    sender.replaceTrack(null);
-                    console.log(`📹 Removed video track from ${odliterId}`);
+            peers.forEach((peerData) => {
+                const senders = peerData.pc.getSenders();
+                const videoSender = senders.find(s => s.track?.kind === 'video');
+                if (videoSender) {
+                    peerData.pc.removeTrack(videoSender);
                 }
             });
 
-            // Remove local video preview
             hideLocalVideo();
             isVideoEnabled = false;
         }
 
-        // Update UI
         elements.videoBtn.classList.toggle('active', isVideoEnabled);
         elements.videoOnIcon.classList.toggle('hidden', !isVideoEnabled);
         elements.videoOffIcon.classList.toggle('hidden', isVideoEnabled);
-
         socket.emit('video-status', { isVideoEnabled });
 
     } catch (err) {
         console.error('❌ Error toggling video:', err);
-        showError('Could not access camera. Please check permissions.');
+        showError('Could not access camera.');
     }
 }
 
@@ -506,26 +615,20 @@ async function toggleScreenShare() {
             const screenTrack = screenStream.getVideoTracks()[0];
             console.log('✅ Got screen track:', screenTrack.label);
 
-            // Handle user stopping share via browser UI
             screenTrack.onended = () => {
                 console.log('🖥️ Screen share ended by user');
                 stopScreenShare();
             };
 
-            // Add screen track to all peer connections
+            // Add to all peer connections
             peers.forEach((peerData, odliterId) => {
                 peerData.pc.addTrack(screenTrack, screenStream);
                 console.log(`🖥️ Added screen track to ${odliterId}`);
             });
 
-            // Show screen share preview
             addScreenShareCard(screenStream);
-
-            // Store for cleanup
-            screenSender = screenTrack;
             isScreenSharing = true;
 
-            // Update UI
             elements.screenBtn.classList.add('active');
             if (elements.screenOnIcon) elements.screenOnIcon.classList.add('hidden');
             if (elements.screenOffIcon) elements.screenOffIcon.classList.remove('hidden');
@@ -543,18 +646,16 @@ async function toggleScreenShare() {
 }
 
 function stopScreenShare() {
-    if (screenSender) {
-        screenSender.stop();
-        screenSender = null;
+    const screenCard = document.getElementById('participant-screen');
+    if (screenCard) {
+        const video = screenCard.querySelector('video');
+        if (video && video.srcObject) {
+            video.srcObject.getTracks().forEach(track => track.stop());
+        }
+        screenCard.remove();
     }
 
-    // Remove screen share card
-    const screenCard = document.getElementById('participant-screen');
-    if (screenCard) screenCard.remove();
-
     isScreenSharing = false;
-
-    // Update UI
     elements.screenBtn.classList.remove('active');
     if (elements.screenOnIcon) elements.screenOnIcon.classList.remove('hidden');
     if (elements.screenOffIcon) elements.screenOffIcon.classList.add('hidden');
@@ -610,7 +711,7 @@ async function confirmName() {
     const action = pendingAction;
     hideNameModal();
 
-    // CRITICAL: Get local stream BEFORE joining room
+    // CRITICAL: Get microphone FIRST
     const hasPermission = await getLocalStream();
     if (!hasPermission) return;
 
@@ -619,7 +720,7 @@ async function confirmName() {
             if (response.success) {
                 joinRoomInternal(response.roomCode);
             } else {
-                showError('Failed to create room. Please try again.');
+                showError('Failed to create room.');
             }
         });
     } else if (action === 'join') {
@@ -648,11 +749,13 @@ function joinRoomInternal(roomCode) {
             showRoomView();
             addParticipantCard('self', userName, true);
 
-            console.log(`🚪 Joined room ${roomCode} with ${response.participants.length} existing participants`);
+            console.log(`🚪 Joined room ${roomCode}`);
+            console.log(`👥 Existing participants: ${response.participants.length}`);
 
-            // Connect to existing participants (they will receive user-joined and send offers)
-            // We wait for their offers, then create answers
+            // Add cards for existing participants
+            // They will send us offers when they receive the 'user-joined' event
             for (const participant of response.participants) {
+                console.log(`  → ${participant.userName} (${participant.odliterId})`);
                 addParticipantCard(participant.odliterId, participant.userName);
             }
 
@@ -683,8 +786,6 @@ function leaveRoom() {
     isMuted = false;
     isVideoEnabled = false;
     isScreenSharing = false;
-    videoSender = null;
-    screenSender = null;
 
     elements.muteBtn.classList.remove('muted');
     elements.micOnIcon.classList.remove('hidden');
@@ -719,10 +820,10 @@ function showRoomView() {
 }
 
 function formatRoomCode(code) {
-    if (code.length === 6) {
+    if (code && code.length === 6) {
         return code.slice(0, 3) + '-' + code.slice(3);
     }
-    return code;
+    return code || '';
 }
 
 function showError(message) {
@@ -755,7 +856,7 @@ function addParticipantCard(id, name, isSelf = false) {
                 <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>
                 <path d="M19 10v2a7 7 0 01-14 0v-2"/>
             </svg>
-            <span>Active</span>
+            <span>${isSelf ? 'You' : 'Connecting...'}</span>
         </div>
     `;
 
@@ -837,6 +938,7 @@ function init() {
     initSocket();
     initEventListeners();
     console.log('🚀 Voice Chat initialized');
+    console.log('📡 ICE servers configured:', ICE_SERVERS.iceServers.length);
 }
 
 init();
