@@ -143,10 +143,17 @@
         </button>
 
         <button id="screen-btn" class="control-btn" title="Share Screen">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg id="screen-on-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
             <line x1="8" y1="21" x2="16" y2="21" />
             <line x1="12" y1="17" x2="12" y2="21" />
+          </svg>
+          <svg id="screen-off-icon" class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2">
+            <path d="M2 3h20v14H2z" />
+            <line x1="8" y1="21" x2="16" y2="21" />
+            <line x1="12" y1="17" x2="12" y2="21" />
+            <line x1="2" y1="2" x2="22" y2="22" stroke-width="2" />
           </svg>
         </button>
 
@@ -158,6 +165,23 @@
           </svg>
         </button>
       </footer>
+    </div>
+
+    <!-- Name Input Modal -->
+    <div id="name-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" />
+            <circle cx="12" cy="7" r="4" />
+          </svg>
+        </div>
+        <h2>What's your name?</h2>
+        <p>Enter your name to join the room</p>
+        <input type="text" id="user-name-input" class="input-field name-input" placeholder="Your name" maxlength="20"
+          autocomplete="off">
+        <button id="confirm-name-btn" class="btn btn-primary">Join Room</button>
+      </div>
     </div>
 
     <!-- Permission Modal -->

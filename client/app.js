@@ -15,10 +15,13 @@ const ICE_SERVERS = {
 let socket = null;
 let localStream = null;
 let localVideoStream = null;
+let screenStream = null;
 let currentRoomCode = null;
 let isMuted = false;
 let isVideoEnabled = false;
-let userName = 'You';
+let isScreenSharing = false;
+let userName = '';
+let pendingAction = null; // 'create' or 'join'
 
 // Peer connections map
 const peers = new Map();
@@ -43,8 +46,13 @@ const elements = {
     micOffIcon: document.getElementById('mic-off-icon'),
     videoOnIcon: document.getElementById('video-on-icon'),
     videoOffIcon: document.getElementById('video-off-icon'),
+    screenOnIcon: document.getElementById('screen-on-icon'),
+    screenOffIcon: document.getElementById('screen-off-icon'),
     permissionModal: document.getElementById('permission-modal'),
     grantPermissionBtn: document.getElementById('grant-permission-btn'),
+    nameModal: document.getElementById('name-modal'),
+    userNameInput: document.getElementById('user-name-input'),
+    confirmNameBtn: document.getElementById('confirm-name-btn'),
     remoteAudioContainer: document.getElementById('remote-audio-container')
 };
 
@@ -138,6 +146,13 @@ async function createPeerConnection(odliterId, peerName, isInitiator) {
         });
     }
 
+    // Add screen share track if enabled
+    if (screenStream) {
+        screenStream.getTracks().forEach(track => {
+            pc.addTrack(track, screenStream);
+        });
+    }
+
     pc.onicecandidate = (event) => {
         if (event.candidate) {
             socket.emit('ice-candidate', {
@@ -186,6 +201,10 @@ async function createPeerConnection(odliterId, peerName, isInitiator) {
                     card.insertBefore(video, card.firstChild);
                 }
                 video.srcObject = remoteStream;
+
+                // Hide avatar when video is on
+                const avatar = card.querySelector('.participant-avatar');
+                if (avatar) avatar.style.display = 'none';
             }
         }
 
@@ -347,34 +366,154 @@ async function toggleVideo() {
     }
 }
 
+async function toggleScreenShare() {
+    try {
+        if (!isScreenSharing) {
+            // Request screen share
+            screenStream = await navigator.mediaDevices.getDisplayMedia({
+                video: { cursor: 'always' },
+                audio: false
+            });
+
+            const screenTrack = screenStream.getVideoTracks()[0];
+
+            // Handle when user stops sharing via browser UI
+            screenTrack.onended = () => {
+                stopScreenShare();
+            };
+
+            // Add screen track to all peer connections
+            peers.forEach(peer => {
+                peer.pc.addTrack(screenTrack, screenStream);
+            });
+
+            // Show screen share in a card
+            addScreenShareCard();
+
+            isScreenSharing = true;
+            console.log('Screen sharing enabled');
+
+            // Update button state
+            elements.screenBtn.classList.add('active');
+            if (elements.screenOnIcon) elements.screenOnIcon.classList.add('hidden');
+            if (elements.screenOffIcon) elements.screenOffIcon.classList.remove('hidden');
+
+        } else {
+            stopScreenShare();
+        }
+
+    } catch (err) {
+        console.error('Error toggling screen share:', err);
+        if (err.name !== 'NotAllowedError') {
+            showError('Could not share screen.');
+        }
+    }
+}
+
+function stopScreenShare() {
+    if (screenStream) {
+        screenStream.getTracks().forEach(track => track.stop());
+        screenStream = null;
+    }
+
+    // Remove screen share tracks from peer connections
+    peers.forEach(peer => {
+        const senders = peer.pc.getSenders();
+        senders.forEach(sender => {
+            if (sender.track && sender.track.kind === 'video' && sender.track.label.includes('screen')) {
+                peer.pc.removeTrack(sender);
+            }
+        });
+    });
+
+    // Remove screen share card
+    const screenCard = document.getElementById('participant-screen');
+    if (screenCard) screenCard.remove();
+
+    isScreenSharing = false;
+    console.log('Screen sharing disabled');
+
+    // Update button state
+    elements.screenBtn.classList.remove('active');
+    if (elements.screenOnIcon) elements.screenOnIcon.classList.remove('hidden');
+    if (elements.screenOffIcon) elements.screenOffIcon.classList.add('hidden');
+}
+
+function addScreenShareCard() {
+    if (document.getElementById('participant-screen')) return;
+
+    const card = document.createElement('div');
+    card.id = 'participant-screen';
+    card.className = 'participant-card';
+
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
+    video.srcObject = screenStream;
+    card.appendChild(video);
+
+    const nameLabel = document.createElement('span');
+    nameLabel.className = 'participant-name';
+    nameLabel.textContent = 'Your Screen';
+    card.appendChild(nameLabel);
+
+    elements.participantsGrid.insertBefore(card, elements.participantsGrid.firstChild);
+}
+
 // ========================================
 // Room Management
 // ========================================
-async function createRoom() {
+function showNameModal(action) {
+    pendingAction = action;
+    elements.nameModal.classList.remove('hidden');
+    elements.userNameInput.focus();
+}
+
+function hideNameModal() {
+    elements.nameModal.classList.add('hidden');
+    elements.userNameInput.value = '';
+    pendingAction = null;
+}
+
+async function confirmName() {
+    const name = elements.userNameInput.value.trim();
+    if (!name) {
+        elements.userNameInput.style.borderColor = '#e74c3c';
+        return;
+    }
+
+    userName = name;
+    hideNameModal();
+
     const hasPermission = await getLocalStream();
     if (!hasPermission) return;
 
-    socket.emit('create-room', (response) => {
-        if (response.success) {
-            joinRoomInternal(response.roomCode);
-        } else {
-            showError('Failed to create room. Please try again.');
-        }
-    });
+    if (pendingAction === 'create') {
+        socket.emit('create-room', (response) => {
+            if (response.success) {
+                joinRoomInternal(response.roomCode);
+            } else {
+                showError('Failed to create room. Please try again.');
+            }
+        });
+    } else if (pendingAction === 'join') {
+        const roomCode = elements.roomCodeInput.value.trim().toUpperCase().replace(/-/g, '');
+        joinRoomInternal(roomCode);
+    }
 }
 
-async function joinRoom() {
-    const roomCode = elements.roomCodeInput.value.trim().toUpperCase().replace(/-/g, '');
+function createRoom() {
+    showNameModal('create');
+}
 
+function joinRoom() {
+    const roomCode = elements.roomCodeInput.value.trim().toUpperCase().replace(/-/g, '');
     if (!roomCode || roomCode.length < 4) {
         showError('Please enter a valid room code.');
         return;
     }
-
-    const hasPermission = await getLocalStream();
-    if (!hasPermission) return;
-
-    joinRoomInternal(roomCode);
+    showNameModal('join');
 }
 
 function joinRoomInternal(roomCode) {
@@ -413,12 +552,18 @@ function leaveRoom() {
         localVideoStream = null;
     }
 
+    if (screenStream) {
+        screenStream.getTracks().forEach(track => track.stop());
+        screenStream = null;
+    }
+
     elements.remoteAudioContainer.innerHTML = '';
     elements.participantsGrid.innerHTML = '';
 
     currentRoomCode = null;
     isMuted = false;
     isVideoEnabled = false;
+    isScreenSharing = false;
 
     elements.muteBtn.classList.remove('muted');
     elements.micOnIcon.classList.remove('hidden');
@@ -427,6 +572,10 @@ function leaveRoom() {
     elements.videoBtn.classList.remove('active');
     elements.videoOnIcon.classList.remove('hidden');
     elements.videoOffIcon.classList.add('hidden');
+
+    elements.screenBtn.classList.remove('active');
+    if (elements.screenOnIcon) elements.screenOnIcon.classList.remove('hidden');
+    if (elements.screenOffIcon) elements.screenOffIcon.classList.add('hidden');
 
     showLandingView();
 }
@@ -478,7 +627,7 @@ function addParticipantCard(id, name, isSelf = false) {
 
     card.innerHTML = `
         <div class="participant-avatar">${initial}</div>
-        <span class="participant-name">${isSelf ? 'You' : name}</span>
+        <span class="participant-name">${name}</span>
         <div class="participant-status" id="status-${id}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>
@@ -534,15 +683,18 @@ function initEventListeners() {
 
     elements.muteBtn.addEventListener('click', toggleMute);
     elements.videoBtn.addEventListener('click', toggleVideo);
+    elements.screenBtn.addEventListener('click', toggleScreenShare);
     elements.leaveBtn.addEventListener('click', leaveRoom);
     elements.copyCodeBtn.addEventListener('click', copyRoomCode);
 
-    if (elements.screenBtn) {
-        elements.screenBtn.addEventListener('click', () => {
-            showError('Screen sharing coming soon!');
-            setTimeout(hideError, 2000);
-        });
-    }
+    // Name modal
+    elements.confirmNameBtn.addEventListener('click', confirmName);
+    elements.userNameInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') confirmName();
+    });
+    elements.userNameInput.addEventListener('input', () => {
+        elements.userNameInput.style.borderColor = '';
+    });
 
     elements.grantPermissionBtn.addEventListener('click', async () => {
         const hasPermission = await getLocalStream();
