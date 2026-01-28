@@ -115,7 +115,16 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Handle WebRTC offer
+  // Unified signal handler for WebRTC (offers, answers, ICE candidates)
+  socket.on('signal', ({ targetId, signal }) => {
+    console.log(`Signal from ${socket.id} to ${targetId}:`, signal.type || 'ice-candidate');
+    socket.to(targetId).emit('signal', {
+      senderId: socket.id,
+      signal
+    });
+  });
+
+  // Keep legacy handlers for backward compatibility
   socket.on('offer', ({ targetId, offer }) => {
     socket.to(targetId).emit('offer', {
       senderId: socket.id,
@@ -123,7 +132,6 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Handle WebRTC answer
   socket.on('answer', ({ targetId, answer }) => {
     socket.to(targetId).emit('answer', {
       senderId: socket.id,
@@ -131,18 +139,10 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Handle ICE candidate
   socket.on('ice-candidate', ({ targetId, candidate }) => {
     socket.to(targetId).emit('ice-candidate', {
       senderId: socket.id,
       candidate
-    });
-  });
-
-  // Handle renegotiation request
-  socket.on('renegotiate', ({ targetId }) => {
-    socket.to(targetId).emit('renegotiate', {
-      senderId: socket.id
     });
   });
 

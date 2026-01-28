@@ -1,29 +1,35 @@
 // ========================================
 // WebRTC Voice & Video Communication App
+// Using Perfect Negotiation Pattern
 // ========================================
 
-// ICE Configuration with STUN and TURN servers
-// TURN servers are CRITICAL for production - they relay media when direct connection fails
+// ICE Configuration - Multiple STUN servers + Free TURN
 const ICE_SERVERS = {
     iceServers: [
-        // STUN servers - help discover public IP
+        // Google STUN servers
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        // Free TURN servers from OpenRelay project
+        { urls: 'stun:stun2.l.google.com:19302' },
+        // Free TURN servers (Metered - they offer free tier)
         {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
+            urls: 'turn:a.relay.metered.ca:80',
+            username: 'e8dd65b92c62d5e89cb5e78f',
+            credential: 'uWdWNmkhvyqTlSlg'
         },
         {
-            urls: 'turn:openrelay.metered.ca:443',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
+            urls: 'turn:a.relay.metered.ca:80?transport=tcp',
+            username: 'e8dd65b92c62d5e89cb5e78f',
+            credential: 'uWdWNmkhvyqTlSlg'
         },
         {
-            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
+            urls: 'turn:a.relay.metered.ca:443',
+            username: 'e8dd65b92c62d5e89cb5e78f',
+            credential: 'uWdWNmkhvyqTlSlg'
+        },
+        {
+            urls: 'turn:a.relay.metered.ca:443?transport=tcp',
+            username: 'e8dd65b92c62d5e89cb5e78f',
+            credential: 'uWdWNmkhvyqTlSlg'
         }
     ],
     iceCandidatePoolSize: 10
@@ -38,8 +44,9 @@ let isVideoEnabled = false;
 let isScreenSharing = false;
 let userName = '';
 let pendingAction = null;
+let mySocketId = null;
 
-// Peer connections map: odliterId -> { pc, userName, iceCandidateBuffer, remoteDescriptionSet }
+// Peer connections map
 const peers = new Map();
 
 // DOM Elements
@@ -73,48 +80,50 @@ const elements = {
 };
 
 // ========================================
+// Debug Logging
+// ========================================
+function log(emoji, msg, ...args) {
+    console.log(`${emoji} [${new Date().toLocaleTimeString()}] ${msg}`, ...args);
+}
+
+// ========================================
 // Socket.IO Connection
 // ========================================
 function initSocket() {
     socket = io();
 
     socket.on('connect', () => {
-        console.log('✅ Connected to signaling server:', socket.id);
+        mySocketId = socket.id;
+        log('✅', `Connected to server: ${socket.id}`);
     });
 
     socket.on('disconnect', () => {
-        console.log('❌ Disconnected from signaling server');
-        showError('Connection lost. Please refresh the page.');
+        log('❌', 'Disconnected from server');
+        showError('Connection lost. Please refresh.');
     });
 
-    // New user joined - we are existing, so we create offer
+    // Someone joined - create connection to them
     socket.on('user-joined', async ({ odliterId, userName: peerName }) => {
-        console.log(`👤 User joined: ${odliterId} (${peerName})`);
+        log('👤', `User joined: ${peerName} (${odliterId})`);
+
+        // Don't connect to ourselves
+        if (odliterId === mySocketId) return;
+
         addParticipantCard(odliterId, peerName);
-        await createPeerConnection(odliterId, peerName, true);
+
+        // We are "polite" peer - the one who was already here
+        await setupPeerConnection(odliterId, peerName, true);
     });
 
     socket.on('user-left', ({ odliterId }) => {
-        console.log(`👤 User left: ${odliterId}`);
+        log('👋', `User left: ${odliterId}`);
         removePeer(odliterId);
     });
 
-    // Received offer
-    socket.on('offer', async ({ senderId, offer }) => {
-        console.log(`📨 Received offer from: ${senderId}`);
-        await handleOffer(senderId, offer);
-    });
-
-    // Received answer
-    socket.on('answer', async ({ senderId, answer }) => {
-        console.log(`📨 Received answer from: ${senderId}`);
-        await handleAnswer(senderId, answer);
-    });
-
-    // ICE candidate
-    socket.on('ice-candidate', async ({ senderId, candidate }) => {
-        if (!candidate) return;
-        await handleIceCandidate(senderId, candidate);
+    // Signaling messages
+    socket.on('signal', async ({ senderId, signal }) => {
+        log('📨', `Signal from ${senderId}:`, signal.type || 'ice-candidate');
+        await handleSignal(senderId, signal);
     });
 
     socket.on('participant-count', ({ count }) => {
@@ -131,238 +140,233 @@ function initSocket() {
 }
 
 // ========================================
-// Offer/Answer/ICE Handlers
+// Signaling
 // ========================================
-async function handleOffer(senderId, offer) {
+async function handleSignal(senderId, signal) {
+    let peerData = peers.get(senderId);
+
+    // If no peer connection yet, create one
+    if (!peerData) {
+        log('🔗', `Creating peer connection for ${senderId} (from signal)`);
+        addParticipantCard(senderId, 'Participant');
+        await setupPeerConnection(senderId, 'Participant', false);
+        peerData = peers.get(senderId);
+    }
+
+    const pc = peerData.pc;
+
     try {
-        let peerData = peers.get(senderId);
+        if (signal.type === 'offer') {
+            log('📥', `Received OFFER from ${senderId}`);
 
-        if (!peerData) {
-            // New peer - create connection first
-            addParticipantCard(senderId, 'Participant');
-            await createPeerConnection(senderId, 'Participant', false);
-            peerData = peers.get(senderId);
+            // Perfect negotiation - handle offer
+            const offerCollision = pc.signalingState !== 'stable';
+
+            if (offerCollision && peerData.polite) {
+                log('⚠️', 'Offer collision, we are polite - accepting');
+            }
+
+            if (offerCollision && !peerData.polite) {
+                log('⚠️', 'Offer collision, we are impolite - ignoring');
+                return;
+            }
+
+            await pc.setRemoteDescription(new RTCSessionDescription(signal));
+            log('📝', `Set remote description (offer) for ${senderId}`);
+
+            // Process buffered ICE candidates
+            await processIceBuffer(senderId);
+
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            log('📤', `Sending ANSWER to ${senderId}`);
+
+            sendSignal(senderId, pc.localDescription);
+
+        } else if (signal.type === 'answer') {
+            log('📥', `Received ANSWER from ${senderId}`);
+
+            if (pc.signalingState === 'have-local-offer') {
+                await pc.setRemoteDescription(new RTCSessionDescription(signal));
+                log('📝', `Set remote description (answer) for ${senderId}`);
+
+                // Process buffered ICE candidates
+                await processIceBuffer(senderId);
+            } else {
+                log('⚠️', `Cannot set answer in state: ${pc.signalingState}`);
+            }
+
+        } else if (signal.candidate) {
+            log('🧊', `Received ICE candidate from ${senderId}`);
+
+            if (pc.remoteDescription) {
+                await pc.addIceCandidate(new RTCIceCandidate(signal));
+                log('🧊', `Added ICE candidate for ${senderId}`);
+            } else {
+                // Buffer the candidate
+                peerData.iceBuffer.push(signal);
+                log('🧊', `Buffered ICE candidate for ${senderId} (${peerData.iceBuffer.length} buffered)`);
+            }
         }
-
-        const pc = peerData.pc;
-
-        // Check if we can set remote description
-        if (pc.signalingState !== 'stable' && pc.signalingState !== 'have-local-offer') {
-            console.warn(`Cannot set remote offer in state: ${pc.signalingState}`);
-            return;
-        }
-
-        // Set remote description
-        await pc.setRemoteDescription(new RTCSessionDescription(offer));
-        peerData.remoteDescriptionSet = true;
-        console.log(`📝 Remote description (offer) set for ${senderId}`);
-
-        // Flush buffered ICE candidates
-        await flushIceCandidates(senderId);
-
-        // Create and send answer
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        console.log(`📝 Local description (answer) set for ${senderId}`);
-
-        socket.emit('answer', { targetId: senderId, answer });
-        console.log(`📤 Sent answer to ${senderId}`);
-
     } catch (err) {
-        console.error('Error handling offer:', err);
+        log('❌', `Error handling signal:`, err);
     }
 }
 
-async function handleAnswer(senderId, answer) {
-    try {
-        const peerData = peers.get(senderId);
-        if (!peerData) {
-            console.warn(`No peer found for ${senderId}`);
-            return;
-        }
-
-        const pc = peerData.pc;
-
-        if (pc.signalingState !== 'have-local-offer') {
-            console.warn(`Cannot set remote answer in state: ${pc.signalingState}`);
-            return;
-        }
-
-        await pc.setRemoteDescription(new RTCSessionDescription(answer));
-        peerData.remoteDescriptionSet = true;
-        console.log(`📝 Remote description (answer) set for ${senderId}`);
-
-        // Flush buffered ICE candidates
-        await flushIceCandidates(senderId);
-
-    } catch (err) {
-        console.error('Error handling answer:', err);
-    }
-}
-
-async function handleIceCandidate(senderId, candidate) {
-    try {
-        let peerData = peers.get(senderId);
-
-        // If no peer yet, buffer the candidate
-        if (!peerData) {
-            console.log(`🧊 Buffering ICE candidate (no peer yet) from ${senderId}`);
-            // We'll receive the offer soon, store candidates temporarily
-            return;
-        }
-
-        // If remote description not set, buffer the candidate
-        if (!peerData.remoteDescriptionSet) {
-            console.log(`🧊 Buffering ICE candidate from ${senderId}`);
-            peerData.iceCandidateBuffer.push(candidate);
-            return;
-        }
-
-        // Add ICE candidate directly
-        await peerData.pc.addIceCandidate(new RTCIceCandidate(candidate));
-        console.log(`🧊 Added ICE candidate from ${senderId}`);
-
-    } catch (err) {
-        console.error('Error handling ICE candidate:', err);
-    }
-}
-
-async function flushIceCandidates(odliterId) {
+async function processIceBuffer(odliterId) {
     const peerData = peers.get(odliterId);
-    if (!peerData || !peerData.iceCandidateBuffer.length) return;
+    if (!peerData || peerData.iceBuffer.length === 0) return;
 
-    console.log(`🧊 Flushing ${peerData.iceCandidateBuffer.length} buffered ICE candidates for ${odliterId}`);
+    log('🧊', `Processing ${peerData.iceBuffer.length} buffered ICE candidates for ${odliterId}`);
 
-    for (const candidate of peerData.iceCandidateBuffer) {
+    for (const candidate of peerData.iceBuffer) {
         try {
             await peerData.pc.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (err) {
-            console.error('Error adding buffered ICE candidate:', err);
+        } catch (e) {
+            log('⚠️', 'Error adding buffered candidate:', e);
         }
     }
-    peerData.iceCandidateBuffer = [];
+    peerData.iceBuffer = [];
+}
+
+function sendSignal(targetId, signal) {
+    socket.emit('signal', { targetId, signal });
 }
 
 // ========================================
 // WebRTC Peer Connection
 // ========================================
-async function createPeerConnection(odliterId, peerName, isInitiator) {
-    console.log(`🔗 Creating peer connection for ${odliterId}, initiator: ${isInitiator}`);
-
-    // Check if connection already exists
+async function setupPeerConnection(odliterId, peerName, polite) {
     if (peers.has(odliterId)) {
-        console.log(`Connection already exists for ${odliterId}`);
-        return peers.get(odliterId).pc;
+        log('⚠️', `Peer connection already exists for ${odliterId}`);
+        return;
     }
+
+    log('🔗', `Setting up peer connection for ${odliterId}, polite: ${polite}`);
 
     const pc = new RTCPeerConnection(ICE_SERVERS);
 
-    // Store peer data FIRST (before adding tracks which triggers negotiationneeded)
-    peers.set(odliterId, {
+    const peerData = {
         pc,
         userName: peerName,
-        isInitiator,
-        remoteDescriptionSet: false,
-        iceCandidateBuffer: [],
-        makingOffer: false,
-        ignoreOffer: false
-    });
+        polite,
+        iceBuffer: [],
+        makingOffer: false
+    };
 
-    // Add local audio tracks
+    peers.set(odliterId, peerData);
+
+    // Add local tracks FIRST
     if (localStream) {
-        console.log(`🎤 Adding ${localStream.getTracks().length} local tracks to ${odliterId}`);
+        log('🎤', `Adding ${localStream.getTracks().length} local tracks to ${odliterId}`);
         localStream.getTracks().forEach(track => {
-            console.log(`  → Adding ${track.kind} track: ${track.label}, enabled: ${track.enabled}`);
+            log('  →', `Adding ${track.kind} track: ${track.label}`);
             pc.addTrack(track, localStream);
         });
     } else {
-        console.warn('⚠️ No localStream when creating peer connection!');
+        log('⚠️', 'No local stream available!');
     }
 
-    // ICE candidate handler
-    pc.onicecandidate = (event) => {
-        if (event.candidate) {
-            console.log(`🧊 Sending ICE candidate to ${odliterId}`);
-            socket.emit('ice-candidate', {
-                targetId: odliterId,
-                candidate: event.candidate
-            });
+    // ICE candidate
+    pc.onicecandidate = ({ candidate }) => {
+        if (candidate) {
+            log('🧊', `Sending ICE candidate to ${odliterId}`);
+            sendSignal(odliterId, candidate);
         }
-    };
-
-    // ICE gathering state
-    pc.onicegatheringstatechange = () => {
-        console.log(`🧊 ICE gathering state with ${odliterId}: ${pc.iceGatheringState}`);
     };
 
     // ICE connection state
     pc.oniceconnectionstatechange = () => {
-        console.log(`🧊 ICE connection state with ${odliterId}: ${pc.iceConnectionState}`);
-        if (pc.iceConnectionState === 'failed') {
-            console.log('⚠️ ICE failed, attempting restart...');
+        log('🧊', `ICE state [${odliterId}]: ${pc.iceConnectionState}`);
+
+        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+            updateStatusIndicator(odliterId, 'connected');
+        } else if (pc.iceConnectionState === 'failed') {
+            log('❌', `ICE failed for ${odliterId}, restarting...`);
             pc.restartIce();
+            updateStatusIndicator(odliterId, 'failed');
+        } else if (pc.iceConnectionState === 'disconnected') {
+            updateStatusIndicator(odliterId, 'disconnected');
         }
     };
 
     // Connection state
     pc.onconnectionstatechange = () => {
-        console.log(`🔌 Connection state with ${odliterId}: ${pc.connectionState}`);
-        updateConnectionIndicator(odliterId, pc.connectionState);
+        log('🔌', `Connection state [${odliterId}]: ${pc.connectionState}`);
+
+        if (pc.connectionState === 'connected') {
+            log('✅', `CONNECTED with ${odliterId}!`);
+            updateStatusIndicator(odliterId, 'connected');
+        } else if (pc.connectionState === 'failed') {
+            updateStatusIndicator(odliterId, 'failed');
+        }
     };
 
-    // CRITICAL: Handle incoming tracks
+    // Negotiation needed - create offer
+    pc.onnegotiationneeded = async () => {
+        log('🔄', `Negotiation needed for ${odliterId}`);
+
+        try {
+            peerData.makingOffer = true;
+            const offer = await pc.createOffer();
+
+            if (pc.signalingState !== 'stable') {
+                log('⚠️', 'Signaling state changed during offer creation');
+                return;
+            }
+
+            await pc.setLocalDescription(offer);
+            log('📤', `Sending OFFER to ${odliterId}`);
+            sendSignal(odliterId, pc.localDescription);
+
+        } catch (err) {
+            log('❌', 'Error in negotiation:', err);
+        } finally {
+            peerData.makingOffer = false;
+        }
+    };
+
+    // Incoming tracks
     pc.ontrack = (event) => {
-        console.log(`🎵 Received ${event.track.kind} track from ${odliterId}`);
-        console.log(`   Track ID: ${event.track.id}, Label: ${event.track.label}`);
-        console.log(`   Streams: ${event.streams.length}`);
+        log('🎵', `Received ${event.track.kind} track from ${odliterId}`);
+
+        const [stream] = event.streams;
+        if (!stream) {
+            log('⚠️', 'No stream in track event');
+            return;
+        }
 
         if (event.track.kind === 'audio') {
-            handleRemoteAudio(odliterId, event.streams[0], event.track);
+            setupRemoteAudio(odliterId, stream);
         } else if (event.track.kind === 'video') {
-            handleRemoteVideo(odliterId, event.streams[0], event.track);
+            setupRemoteVideo(odliterId, stream);
         }
     };
 
-    // If initiator, create and send offer
-    if (isInitiator) {
-        try {
-            console.log(`📤 Creating offer for ${odliterId}...`);
-            const offer = await pc.createOffer({
-                offerToReceiveAudio: true,
-                offerToReceiveVideo: true
-            });
-            await pc.setLocalDescription(offer);
-            console.log(`📝 Local description (offer) set for ${odliterId}`);
-
-            socket.emit('offer', { targetId: odliterId, offer });
-            console.log(`📤 Sent offer to ${odliterId}`);
-        } catch (err) {
-            console.error('Error creating offer:', err);
-        }
-    }
-
-    return pc;
+    log('✅', `Peer connection created for ${odliterId}`);
 }
 
-function updateConnectionIndicator(odliterId, state) {
-    const card = document.getElementById(`participant-${odliterId}`);
-    if (!card) return;
+function updateStatusIndicator(odliterId, status) {
+    const statusEl = document.getElementById(`status-${odliterId}`);
+    if (!statusEl) return;
 
-    const status = card.querySelector('.participant-status');
-    if (!status) return;
+    const span = statusEl.querySelector('span');
+    if (!span) return;
 
-    if (state === 'connected') {
-        status.style.background = 'rgba(39, 174, 96, 0.8)';
-        console.log(`✅ Fully connected with ${odliterId}`);
-    } else if (state === 'connecting' || state === 'new') {
-        status.style.background = 'rgba(241, 196, 15, 0.8)';
-    } else if (state === 'failed' || state === 'disconnected') {
-        status.style.background = 'rgba(231, 76, 60, 0.8)';
+    if (status === 'connected') {
+        statusEl.style.background = 'rgba(39, 174, 96, 0.9)';
+        span.textContent = 'Active';
+    } else if (status === 'failed') {
+        statusEl.style.background = 'rgba(231, 76, 60, 0.9)';
+        span.textContent = 'Failed';
+    } else if (status === 'disconnected') {
+        statusEl.style.background = 'rgba(241, 196, 15, 0.9)';
+        span.textContent = 'Reconnecting';
     }
 }
 
-function handleRemoteAudio(odliterId, stream, track) {
-    console.log(`🔊 Setting up remote audio for ${odliterId}`);
+function setupRemoteAudio(odliterId, stream) {
+    log('🔊', `Setting up audio for ${odliterId}`);
 
     let audio = document.getElementById(`audio-${odliterId}`);
     if (!audio) {
@@ -370,66 +374,40 @@ function handleRemoteAudio(odliterId, stream, track) {
         audio.id = `audio-${odliterId}`;
         audio.autoplay = true;
         audio.playsInline = true;
-        audio.volume = 1.0;
         elements.remoteAudioContainer.appendChild(audio);
-        console.log(`🔊 Created audio element for ${odliterId}`);
     }
 
-    // Set the stream as source
     audio.srcObject = stream;
 
-    // Monitor track state
-    track.onunmute = () => {
-        console.log(`🔊 Audio track unmuted from ${odliterId}`);
-    };
-    track.onmute = () => {
-        console.log(`🔇 Audio track muted from ${odliterId}`);
-    };
-
-    // Force play
-    const playPromise = audio.play();
-    if (playPromise !== undefined) {
-        playPromise.then(() => {
-            console.log(`🔊 Audio playing for ${odliterId}`);
-        }).catch(err => {
-            console.warn(`⚠️ Audio autoplay blocked for ${odliterId}:`, err.message);
-            // Add click handler to resume
-            const resumeAudio = () => {
-                audio.play().then(() => {
-                    console.log(`🔊 Audio resumed for ${odliterId}`);
-                }).catch(e => console.error('Still blocked:', e));
-                document.removeEventListener('click', resumeAudio);
-            };
-            document.addEventListener('click', resumeAudio);
+    audio.play()
+        .then(() => log('🔊', `Audio playing for ${odliterId}`))
+        .catch(err => {
+            log('⚠️', `Audio blocked for ${odliterId}:`, err.message);
+            document.addEventListener('click', () => audio.play(), { once: true });
         });
-    }
 }
 
-function handleRemoteVideo(odliterId, stream, track) {
-    console.log(`📺 Setting up remote video for ${odliterId}`);
+function setupRemoteVideo(odliterId, stream) {
+    log('📺', `Setting up video for ${odliterId}`);
 
     const card = document.getElementById(`participant-${odliterId}`);
-    if (!card) {
-        console.warn(`No card found for ${odliterId}`);
-        return;
-    }
+    if (!card) return;
 
     let video = card.querySelector('video');
     if (!video) {
         video = document.createElement('video');
         video.autoplay = true;
         video.playsInline = true;
-        video.muted = true; // Mute video element (audio comes from separate audio element)
+        video.muted = true;
         card.insertBefore(video, card.firstChild);
     }
 
     video.srcObject = stream;
 
-    // Hide avatar
     const avatar = card.querySelector('.participant-avatar');
     if (avatar) avatar.style.display = 'none';
 
-    video.play().catch(err => console.warn('Video play issue:', err));
+    video.play().catch(e => log('⚠️', 'Video play error:', e));
 }
 
 function removePeer(odliterId) {
@@ -437,23 +415,24 @@ function removePeer(odliterId) {
     if (peerData) {
         peerData.pc.close();
         peers.delete(odliterId);
-
-        const audio = document.getElementById(`audio-${odliterId}`);
-        if (audio) audio.remove();
-
-        const card = document.getElementById(`participant-${odliterId}`);
-        if (card) card.remove();
-
-        console.log(`🗑️ Removed peer ${odliterId}`);
     }
+
+    const audio = document.getElementById(`audio-${odliterId}`);
+    if (audio) audio.remove();
+
+    const card = document.getElementById(`participant-${odliterId}`);
+    if (card) card.remove();
+
+    log('🗑️', `Removed peer ${odliterId}`);
 }
 
 // ========================================
-// Media Stream
+// Media
 // ========================================
 async function getLocalStream() {
     try {
-        console.log('🎤 Requesting microphone access...');
+        log('🎤', 'Requesting microphone...');
+
         localStream = await navigator.mediaDevices.getUserMedia({
             audio: {
                 echoCancellation: true,
@@ -463,23 +442,14 @@ async function getLocalStream() {
             video: false
         });
 
-        // Verify we got tracks
-        const audioTracks = localStream.getAudioTracks();
-        console.log(`✅ Got ${audioTracks.length} audio tracks`);
-        audioTracks.forEach(track => {
-            console.log(`   Track: ${track.label}, enabled: ${track.enabled}, muted: ${track.muted}`);
-        });
+        const tracks = localStream.getTracks();
+        log('✅', `Got ${tracks.length} audio tracks`);
+        tracks.forEach(t => log('  →', `${t.kind}: ${t.label}, enabled: ${t.enabled}`));
 
         return true;
     } catch (err) {
-        console.error('❌ Error accessing microphone:', err);
-        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-            showError('Microphone access denied. Please allow microphone access.');
-        } else if (err.name === 'NotFoundError') {
-            showError('No microphone found. Please connect a microphone.');
-        } else {
-            showError('Could not access microphone: ' + err.message);
-        }
+        log('❌', 'Microphone error:', err);
+        showError('Microphone access denied.');
         return false;
     }
 }
@@ -490,8 +460,9 @@ function toggleMute() {
     isMuted = !isMuted;
     localStream.getAudioTracks().forEach(track => {
         track.enabled = !isMuted;
-        console.log(`🎤 Track ${track.label} enabled: ${track.enabled}`);
     });
+
+    log('🎤', isMuted ? 'Muted' : 'Unmuted');
 
     elements.muteBtn.classList.toggle('muted', isMuted);
     elements.micOnIcon.classList.toggle('hidden', isMuted);
@@ -501,60 +472,45 @@ function toggleMute() {
 
     const selfStatus = document.getElementById('status-self');
     if (selfStatus) {
-        selfStatus.classList.toggle('muted', isMuted);
-        selfStatus.querySelector('span').textContent = isMuted ? 'Muted' : 'Active';
+        selfStatus.querySelector('span').textContent = isMuted ? 'Muted' : 'You';
     }
 }
 
 async function toggleVideo() {
     try {
         if (!isVideoEnabled) {
-            console.log('📹 Enabling video...');
+            log('📹', 'Enabling video...');
 
-            // Get video stream
             const videoStream = await navigator.mediaDevices.getUserMedia({
                 video: { width: { ideal: 1280 }, height: { ideal: 720 } }
             });
 
             const videoTrack = videoStream.getVideoTracks()[0];
-            console.log('✅ Got video track:', videoTrack.label);
+            log('✅', `Got video: ${videoTrack.label}`);
 
-            // Add video track to local stream
+            // Add to local stream
             localStream.addTrack(videoTrack);
 
-            // Add to all peer connections and renegotiate
-            for (const [odliterId, peerData] of peers) {
+            // Add to all peer connections
+            peers.forEach((peerData, odliterId) => {
+                log('📹', `Adding video track to ${odliterId}`);
                 peerData.pc.addTrack(videoTrack, localStream);
-                console.log(`📹 Added video track to ${odliterId}`);
+            });
 
-                // Renegotiate
-                if (peerData.isInitiator) {
-                    const offer = await peerData.pc.createOffer();
-                    await peerData.pc.setLocalDescription(offer);
-                    socket.emit('offer', { targetId: odliterId, offer });
-                }
-            }
-
-            // Show local video preview
             showLocalVideo(videoStream);
             isVideoEnabled = true;
 
         } else {
-            console.log('📹 Disabling video...');
+            log('📹', 'Disabling video...');
 
-            // Stop and remove video track
             localStream.getVideoTracks().forEach(track => {
                 track.stop();
                 localStream.removeTrack(track);
             });
 
-            // Remove from peer connections
-            peers.forEach((peerData) => {
-                const senders = peerData.pc.getSenders();
-                const videoSender = senders.find(s => s.track?.kind === 'video');
-                if (videoSender) {
-                    peerData.pc.removeTrack(videoSender);
-                }
+            peers.forEach(peerData => {
+                const sender = peerData.pc.getSenders().find(s => s.track?.kind === 'video');
+                if (sender) peerData.pc.removeTrack(sender);
             });
 
             hideLocalVideo();
@@ -567,8 +523,8 @@ async function toggleVideo() {
         socket.emit('video-status', { isVideoEnabled });
 
     } catch (err) {
-        console.error('❌ Error toggling video:', err);
-        showError('Could not access camera.');
+        log('❌', 'Video error:', err);
+        showError('Camera access denied.');
     }
 }
 
@@ -585,6 +541,7 @@ function showLocalVideo(stream) {
         video.style.transform = 'scaleX(-1)';
         selfCard.insertBefore(video, selfCard.firstChild);
     }
+
     video.srcObject = stream;
 
     const avatar = selfCard.querySelector('.participant-avatar');
@@ -605,7 +562,7 @@ function hideLocalVideo() {
 async function toggleScreenShare() {
     try {
         if (!isScreenSharing) {
-            console.log('🖥️ Starting screen share...');
+            log('🖥️', 'Starting screen share...');
 
             const screenStream = await navigator.mediaDevices.getDisplayMedia({
                 video: { cursor: 'always' },
@@ -613,54 +570,42 @@ async function toggleScreenShare() {
             });
 
             const screenTrack = screenStream.getVideoTracks()[0];
-            console.log('✅ Got screen track:', screenTrack.label);
 
             screenTrack.onended = () => {
-                console.log('🖥️ Screen share ended by user');
+                log('🖥️', 'Screen share ended');
                 stopScreenShare();
             };
 
-            // Add to all peer connections
             peers.forEach((peerData, odliterId) => {
+                log('🖥️', `Adding screen track to ${odliterId}`);
                 peerData.pc.addTrack(screenTrack, screenStream);
-                console.log(`🖥️ Added screen track to ${odliterId}`);
             });
 
             addScreenShareCard(screenStream);
             isScreenSharing = true;
 
             elements.screenBtn.classList.add('active');
-            if (elements.screenOnIcon) elements.screenOnIcon.classList.add('hidden');
-            if (elements.screenOffIcon) elements.screenOffIcon.classList.remove('hidden');
 
         } else {
             stopScreenShare();
         }
-
     } catch (err) {
-        console.error('❌ Error toggling screen share:', err);
-        if (err.name !== 'NotAllowedError') {
-            showError('Could not share screen.');
-        }
+        log('❌', 'Screen share error:', err);
     }
 }
 
 function stopScreenShare() {
-    const screenCard = document.getElementById('participant-screen');
-    if (screenCard) {
-        const video = screenCard.querySelector('video');
-        if (video && video.srcObject) {
-            video.srcObject.getTracks().forEach(track => track.stop());
+    const card = document.getElementById('participant-screen');
+    if (card) {
+        const video = card.querySelector('video');
+        if (video?.srcObject) {
+            video.srcObject.getTracks().forEach(t => t.stop());
         }
-        screenCard.remove();
+        card.remove();
     }
 
     isScreenSharing = false;
     elements.screenBtn.classList.remove('active');
-    if (elements.screenOnIcon) elements.screenOnIcon.classList.remove('hidden');
-    if (elements.screenOffIcon) elements.screenOffIcon.classList.add('hidden');
-
-    console.log('🖥️ Screen share stopped');
 }
 
 function addScreenShareCard(stream) {
@@ -677,10 +622,10 @@ function addScreenShareCard(stream) {
     video.srcObject = stream;
     card.appendChild(video);
 
-    const nameLabel = document.createElement('span');
-    nameLabel.className = 'participant-name';
-    nameLabel.textContent = 'Your Screen';
-    card.appendChild(nameLabel);
+    const label = document.createElement('span');
+    label.className = 'participant-name';
+    label.textContent = 'Your Screen';
+    card.appendChild(label);
 
     elements.participantsGrid.insertBefore(card, elements.participantsGrid.firstChild);
 }
@@ -711,21 +656,18 @@ async function confirmName() {
     const action = pendingAction;
     hideNameModal();
 
-    // CRITICAL: Get microphone FIRST
-    const hasPermission = await getLocalStream();
-    if (!hasPermission) return;
+    // Get microphone FIRST
+    const ok = await getLocalStream();
+    if (!ok) return;
 
     if (action === 'create') {
-        socket.emit('create-room', (response) => {
-            if (response.success) {
-                joinRoomInternal(response.roomCode);
-            } else {
-                showError('Failed to create room.');
-            }
+        socket.emit('create-room', (res) => {
+            if (res.success) joinRoomInternal(res.roomCode);
+            else showError('Failed to create room.');
         });
     } else if (action === 'join') {
-        const roomCode = elements.roomCodeInput.value.trim().toUpperCase().replace(/-/g, '');
-        joinRoomInternal(roomCode);
+        const code = elements.roomCodeInput.value.trim().toUpperCase().replace(/-/g, '');
+        joinRoomInternal(code);
     }
 }
 
@@ -734,34 +676,32 @@ function createRoom() {
 }
 
 function joinRoom() {
-    const roomCode = elements.roomCodeInput.value.trim().toUpperCase().replace(/-/g, '');
-    if (!roomCode || roomCode.length < 4) {
-        showError('Please enter a valid room code.');
+    const code = elements.roomCodeInput.value.trim().toUpperCase().replace(/-/g, '');
+    if (!code || code.length < 4) {
+        showError('Enter a valid room code.');
         return;
     }
     showNameModal('join');
 }
 
 function joinRoomInternal(roomCode) {
-    socket.emit('join-room', { roomCode, userName }, async (response) => {
-        if (response.success) {
+    socket.emit('join-room', { roomCode, userName }, async (res) => {
+        if (res.success) {
             currentRoomCode = roomCode;
             showRoomView();
             addParticipantCard('self', userName, true);
 
-            console.log(`🚪 Joined room ${roomCode}`);
-            console.log(`👥 Existing participants: ${response.participants.length}`);
+            log('🚪', `Joined room ${roomCode} with ${res.participants.length} others`);
 
-            // Add cards for existing participants
-            // They will send us offers when they receive the 'user-joined' event
-            for (const participant of response.participants) {
-                console.log(`  → ${participant.userName} (${participant.odliterId})`);
-                addParticipantCard(participant.odliterId, participant.userName);
+            // Add existing participants - they will send us offers
+            for (const p of res.participants) {
+                log('👤', `Existing participant: ${p.userName}`);
+                addParticipantCard(p.odliterId, p.userName);
             }
 
-            updateParticipantCount(response.participantCount);
+            updateParticipantCount(res.participantCount);
         } else {
-            showError(response.error || 'Failed to join room.');
+            showError(res.error || 'Failed to join.');
         }
     });
 }
@@ -769,13 +709,11 @@ function joinRoomInternal(roomCode) {
 function leaveRoom() {
     socket.emit('leave-room');
 
-    peers.forEach((peerData) => {
-        peerData.pc.close();
-    });
+    peers.forEach(p => p.pc.close());
     peers.clear();
 
     if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
+        localStream.getTracks().forEach(t => t.stop());
         localStream = null;
     }
 
@@ -790,21 +728,15 @@ function leaveRoom() {
     elements.muteBtn.classList.remove('muted');
     elements.micOnIcon.classList.remove('hidden');
     elements.micOffIcon.classList.add('hidden');
-
     elements.videoBtn.classList.remove('active');
-    elements.videoOnIcon.classList.remove('hidden');
-    elements.videoOffIcon.classList.add('hidden');
-
     elements.screenBtn.classList.remove('active');
-    if (elements.screenOnIcon) elements.screenOnIcon.classList.remove('hidden');
-    if (elements.screenOffIcon) elements.screenOffIcon.classList.add('hidden');
 
     showLandingView();
-    console.log('🚪 Left room');
+    log('🚪', 'Left room');
 }
 
 // ========================================
-// UI Updates
+// UI
 // ========================================
 function showLandingView() {
     elements.landingView.classList.add('active');
@@ -820,14 +752,11 @@ function showRoomView() {
 }
 
 function formatRoomCode(code) {
-    if (code && code.length === 6) {
-        return code.slice(0, 3) + '-' + code.slice(3);
-    }
-    return code || '';
+    return code?.length === 6 ? `${code.slice(0, 3)}-${code.slice(3)}` : code || '';
 }
 
-function showError(message) {
-    elements.errorMessage.textContent = message;
+function showError(msg) {
+    elements.errorMessage.textContent = msg;
     elements.errorMessage.classList.remove('hidden');
 }
 
@@ -846,10 +775,8 @@ function addParticipantCard(id, name, isSelf = false) {
     card.id = `participant-${id}`;
     card.className = 'participant-card' + (isSelf ? ' local-video-container' : '');
 
-    const initial = name.charAt(0).toUpperCase();
-
     card.innerHTML = `
-        <div class="participant-avatar">${initial}</div>
+        <div class="participant-avatar">${name.charAt(0).toUpperCase()}</div>
         <span class="participant-name">${name}</span>
         <div class="participant-status" id="status-${id}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -871,26 +798,23 @@ function updatePeerMuteStatus(odliterId, isMuted) {
     }
 }
 
-function updatePeerVideoStatus(odliterId, isVideoEnabled) {
+function updatePeerVideoStatus(odliterId, isVideo) {
     const card = document.getElementById(`participant-${odliterId}`);
     if (card) {
         const avatar = card.querySelector('.participant-avatar');
-        if (avatar) {
-            avatar.style.display = isVideoEnabled ? 'none' : 'flex';
-        }
+        if (avatar) avatar.style.display = isVideo ? 'none' : 'flex';
     }
 }
 
 async function copyRoomCode() {
     try {
         await navigator.clipboard.writeText(currentRoomCode);
-        const originalText = elements.currentRoomCode.textContent;
-        elements.currentRoomCode.textContent = 'Copied!';
-        setTimeout(() => {
-            elements.currentRoomCode.textContent = originalText;
-        }, 1500);
-    } catch (err) {
-        console.error('Failed to copy:', err);
+        const el = elements.currentRoomCode;
+        const orig = el.textContent;
+        el.textContent = 'Copied!';
+        setTimeout(() => el.textContent = orig, 1500);
+    } catch (e) {
+        log('❌', 'Copy failed:', e);
     }
 }
 
@@ -900,9 +824,7 @@ async function copyRoomCode() {
 function initEventListeners() {
     elements.createRoomBtn.addEventListener('click', createRoom);
     elements.joinRoomBtn.addEventListener('click', joinRoom);
-    elements.roomCodeInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') joinRoom();
-    });
+    elements.roomCodeInput.addEventListener('keypress', e => e.key === 'Enter' && joinRoom());
 
     elements.muteBtn.addEventListener('click', toggleMute);
     elements.videoBtn.addEventListener('click', toggleVideo);
@@ -911,34 +833,27 @@ function initEventListeners() {
     elements.copyCodeBtn.addEventListener('click', copyRoomCode);
 
     elements.confirmNameBtn.addEventListener('click', confirmName);
-    elements.userNameInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') confirmName();
-    });
-    elements.userNameInput.addEventListener('input', () => {
-        elements.userNameInput.style.borderColor = '';
-    });
+    elements.userNameInput.addEventListener('keypress', e => e.key === 'Enter' && confirmName());
+    elements.userNameInput.addEventListener('input', () => elements.userNameInput.style.borderColor = '');
 
     elements.grantPermissionBtn.addEventListener('click', async () => {
-        const hasPermission = await getLocalStream();
-        if (hasPermission) {
-            elements.permissionModal.classList.add('hidden');
-        }
+        if (await getLocalStream()) elements.permissionModal.classList.add('hidden');
     });
 
-    elements.roomCodeInput.addEventListener('input', (e) => {
+    elements.roomCodeInput.addEventListener('input', e => {
         e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
         hideError();
     });
 }
 
 // ========================================
-// Initialize App
+// Init
 // ========================================
 function init() {
     initSocket();
     initEventListeners();
-    console.log('🚀 Voice Chat initialized');
-    console.log('📡 ICE servers configured:', ICE_SERVERS.iceServers.length);
+    log('🚀', 'Voice Chat initialized');
+    log('📡', `${ICE_SERVERS.iceServers.length} ICE servers configured`);
 }
 
 init();
